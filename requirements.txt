@@ -1,19 +1,6 @@
-# Core Framework
-Flask==2.3.3
-
-# Database ORM
-Flask-SQLAlchemy==3.0.5
-
-# QR Code Generation
-qrcode==7.4.2
-Pillow==10.0.1
-
-# Password Hashing & Security
-Werkzeug==2.3.7
-
-# Database Driver (MySQL/MariaDB)
-PyMySQL==1.1.0
-cryptography==41.0.7
-
-# Optional: For .env file support
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+qrcode[pil]==7.4.2
+Werkzeug==3.0.1
+gunicorn==21.2.0
 python-dotenv==1.0.0
