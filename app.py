@@ -6,22 +6,22 @@ from functools import wraps
 from pathlib import Path
 import qrcode, smtplib, random, string, sqlite3, os
 from email.mime.text import MIMEText
-
+ 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = "change-this-secret-key-to-something-secure"
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///brand_new_attendance.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-
+ 
 SENDER_EMAIL = "your-email@gmail.com"
 SENDER_PASSWORD = "your-app-password-here"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
-
+ 
 db = SQLAlchemy(app)
 BASE_DIR = Path(__file__).resolve().parent
 QR_FOLDER = BASE_DIR / "qr_codes"
 QR_FOLDER.mkdir(exist_ok=True)
-
+ 
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -32,7 +32,7 @@ class User(db.Model):
         self.password_hash = generate_password_hash(password)
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
-
+ 
 class Student(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.String(50), unique=True, nullable=False)
@@ -43,7 +43,7 @@ class Student(db.Model):
     section = db.Column(db.String(50), nullable=True)
     active = db.Column(db.Boolean, default=True)
     attendances = db.relationship("Attendance", backref="student", lazy=True, cascade="all, delete-orphan")
-
+ 
 class AttendanceSchedule(db.Model):
     __tablename__ = "attendance_schedules"
     id = db.Column(db.Integer, primary_key=True)
@@ -57,7 +57,7 @@ class AttendanceSchedule(db.Model):
     late_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
     active = db.Column(db.Boolean, default=True)
-
+ 
 class AttendanceSession(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(150), nullable=False)
@@ -72,7 +72,7 @@ class AttendanceSession(db.Model):
     major = db.Column(db.String(100), nullable=True)
     section = db.Column(db.String(50), nullable=True)
     attendances = db.relationship("Attendance", backref="attendance_session", lazy=True, cascade="all, delete-orphan")
-
+ 
 class Attendance(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("student.id"), nullable=False)
@@ -80,7 +80,7 @@ class Attendance(db.Model):
     scan_time = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), nullable=False)
     __table_args__ = (db.UniqueConstraint("student_id", "session_id", name="unique_student_session"),)
-
+ 
 class AssessmentConfig(db.Model):
     __tablename__ = "assessment_configs"
     id = db.Column(db.Integer, primary_key=True)
@@ -94,7 +94,7 @@ class AssessmentConfig(db.Model):
     weight = db.Column(db.Float, nullable=False, default=0)
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.now)
-
+ 
 class Assessment(db.Model):
     __tablename__ = "assessments"
     id = db.Column(db.Integer, primary_key=True)
@@ -113,16 +113,16 @@ class Assessment(db.Model):
     major = db.Column(db.String(100), nullable=True)
     section = db.Column(db.String(50), nullable=True)
     student = db.relationship("Student", backref=db.backref("assessments", lazy=True, cascade="all, delete-orphan"))
-
+ 
 ASSESSMENT_TYPES = ["Quiz", "Activity", "Exam", "Performance", "Oral Recitation"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
+ 
 def send_reset_email(to_email, reset_code):
     subject = "Password Reset Code"
     body = f"""Hello,
-
+ 
 Your verification code is: {reset_code}
-
+ 
 Enter this code to create a new password.
 If you did not request this, ignore this email."""
     msg = MIMEText(body)
@@ -139,7 +139,7 @@ If you did not request this, ignore this email."""
     except Exception as e:
         print("Email Error:", e)
         return False
-
+ 
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
@@ -147,18 +147,18 @@ def login_required(f):
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
-
+ 
 def parse_time(value):
     return datetime.strptime(value, "%H:%M").time()
-
+ 
 def selected_days(value):
     if not value:
         return []
     return [x.strip() for x in value.split(",") if x.strip() in DAY_NAMES]
-
+ 
 def schedule_matches_today(s):
     return DAY_NAMES[date.today().weekday()] in selected_days(s.days)
-
+ 
 def class_students(course, year_level, major="", section=""):
     q = Student.query.filter_by(active=True, course=course, year_level=year_level)
     if major:
@@ -166,7 +166,7 @@ def class_students(course, year_level, major="", section=""):
     if section:
         q = q.filter(Student.section == section)
     return q.order_by(Student.full_name).all()
-
+ 
 def create_today_sessions():
     today = date.today()
     today_name = DAY_NAMES[today.weekday()]
@@ -188,7 +188,7 @@ def create_today_sessions():
     if created:
         db.session.commit()
     return created
-
+ 
 def close_expired_sessions():
     now = datetime.now()
     sessions = AttendanceSession.query.filter(
@@ -210,7 +210,7 @@ def close_expired_sessions():
             changed = True
     if changed:
         db.session.commit()
-
+ 
 def get_active_session():
     create_today_sessions()
     close_expired_sessions()
@@ -221,13 +221,13 @@ def get_active_session():
         AttendanceSession.start_time <= now,
         AttendanceSession.end_time >= now
     ).order_by(AttendanceSession.id.desc()).first()
-
+ 
 def determine_status(attendance_session):
     return "PRESENT" if datetime.now().time() < attendance_session.late_time else "LATE"
-
+ 
 def qr_path(student_id):
     return QR_FOLDER / f"{str(student_id).strip()}.png"
-
+ 
 def generate_student_qr(student_id):
     path = qr_path(student_id)
     qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
@@ -235,26 +235,26 @@ def generate_student_qr(student_id):
     qr.make(fit=True)
     qr.make_image().save(path)
     return path
-
+ 
 def delete_student_qr(student_id):
     path = qr_path(student_id)
     if path.exists():
         path.unlink()
-
+ 
 def db_columns(table):
     con = sqlite3.connect(get_db_path())
     try:
         return {row[1] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
     finally:
         con.close()
-
+ 
 def get_db_path():
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     if uri.startswith("sqlite:///"):
         p = uri.replace("sqlite:///", "", 1)
         return str((Path(app.instance_path) / p).resolve())
     return str((BASE_DIR / "brand_new_attendance.db").resolve())
-
+ 
 def migrate_existing_database():
     db.create_all()
     con = sqlite3.connect(get_db_path())
@@ -292,7 +292,7 @@ def migrate_existing_database():
     finally:
         con.close()
     db.session.expire_all()
-
+ 
 BASE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -301,14 +301,33 @@ BASE_HTML = """
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{{ title }}</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;min-height:100vh;background:#eef4ff;color:#172033}
-.topbar{background:#0f172a;color:white;padding:15px 25px;display:flex;justify-content:space-between;align-items:center}.brand{font-size:20px;font-weight:bold}nav{display:flex;gap:6px;flex-wrap:wrap}nav a{color:white;text-decoration:none;padding:9px 11px;border-radius:7px}nav a:hover{background:#334155}.menu{display:none;background:transparent;border:0;color:white;font-size:25px}
-.container{width:94%;max-width:1250px;margin:30px auto}.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:15px;flex-wrap:wrap}.card,.stat{background:white;padding:22px;border-radius:15px;margin-bottom:20px;box-shadow:0 3px 15px rgba(0,0,0,.08)}.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:15px;margin-bottom:20px}.stat span{color:#64748b}.stat strong{display:block;font-size:30px;margin-top:8px}.present{color:#15803d}.late{color:#b45309}.absent{color:#b91c1c}
-.btn{border:none;padding:10px 15px;border-radius:8px;cursor:pointer;text-decoration:none;display:inline-block;font-weight:bold}.primary{background:#2563eb;color:white}.secondary{background:#e2e8f0;color:#1e293b}.danger{background:#dc2626;color:white}.warning-btn{background:#d97706;color:white}.small{padding:6px 10px;font-size:12px}.full{width:100%}
-input,select{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:8px;margin-bottom:10px;font-size:15px}label{display:block;font-weight:bold;margin:10px 0 5px}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:12px;border-bottom:1px solid #e2e8f0}th{background:#f8fafc}.table-container{overflow-x:auto}.badge{padding:5px 9px;border-radius:20px;font-size:12px;font-weight:bold}.badge.present{background:#dcfce7;color:#166534}.badge.late{background:#fef3c7;color:#92400e}.badge.absent{background:#fee2e2;color:#991b1b}.badge.active{background:#dcfce7;color:#166534}.badge.inactive{background:#fee2e2;color:#991b1b}
-.alert{padding:13px;border-radius:8px;margin-bottom:20px}.alert.success{background:#dcfce7;color:#166534}.alert.danger{background:#fee2e2;color:#991b1b}.alert.warning{background:#fef3c7;color:#92400e}.alert.info{background:#dbeafe;color:#1e40af}.session-banner{background:#dbeafe;color:#1e40af;padding:15px;border-radius:10px;margin-bottom:20px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px}.form-card{max-width:850px}.form-actions{margin-top:20px;display:flex;justify-content:flex-end;gap:10px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:15px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.check-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:15px}.check-grid label{font-weight:normal;background:#f8fafc;padding:9px;border-radius:8px;margin:0}.check-grid input{width:auto;margin:0 6px 0 0}.scanner{max-width:700px;margin:auto}#reader{width:100%;min-height:280px}.scanner-status{text-align:center;padding:15px;margin-top:15px;border-radius:8px;background:#f1f5f9;font-weight:bold}.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center}.login-card{background:white;width:90%;max-width:420px;padding:30px;border-radius:18px;box-shadow:0 8px 30px rgba(0,0,0,.15)}.login-card h1{text-align:center}.muted{color:#64748b}.empty{text-align:center;padding:30px;color:#64748b}.qr-card{text-align:center;max-width:520px;margin:auto}.qr-card img{width:300px;max-width:80%;height:auto;border:10px solid white;border-radius:10px}.student-profile{display:grid;grid-template-columns:1fr 1fr;gap:20px}.result{background:white;padding:20px;border-radius:15px;margin-top:20px;text-align:center}.hidden{display:none}.score-input{min-width:110px}.class-filter{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.help{background:#f8fafc;border-left:4px solid #2563eb;padding:12px;margin:12px 0;border-radius:6px}
-@media(max-width:850px){.stats{grid-template-columns:repeat(2,1fr)}.grid2,.grid3,.class-filter{grid-template-columns:1fr 1fr}.check-grid{grid-template-columns:repeat(2,1fr)}nav{display:none;position:absolute;top:60px;left:0;right:0;background:#0f172a;flex-direction:column;padding:15px;z-index:10}nav.show{display:flex}.menu{display:block}}
-@media(max-width:550px){.container{width:92%}.stats,.grid2,.grid3,.class-filter{grid-template-columns:1fr}.check-grid{grid-template-columns:1fr}.student-profile{grid-template-columns:1fr}}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap');
+:root{--ink:#172033;--muted:#718096;--blue:#4568f5;--violet:#7657e8;--line:#e7eaf3;--surface:#fff;--bg:#f5f7fc;--mint:#16a085}
+*{box-sizing:border-box}
+body{margin:0;font-family:'DM Sans',Arial,sans-serif;min-height:100vh;background:radial-gradient(ellipse at 8% 0%,#e8edff 0,transparent 36%),radial-gradient(ellipse at 100% 12%,#e9e3ff 0,transparent 30%),var(--bg);color:var(--ink);font-size:14px}
+h1,h2,h3,.brand{font-family:'Space Grotesk',sans-serif;letter-spacing:-.5px}
+h1{font-size:clamp(25px,3vw,34px);margin:0 0 8px;font-weight:700}h2{font-size:21px;margin:0 0 16px}h3{font-size:17px}
+.topbar{background:linear-gradient(110deg,#172554,#292b69 58%,#5145b5);color:white;padding:15px clamp(16px,3vw,38px);display:flex;justify-content:space-between;align-items:center;gap:18px;box-shadow:0 8px 28px #202b6530;position:sticky;top:0;z-index:20}
+.brand{font-size:20px;font-weight:700;white-space:nowrap;display:flex;align-items:center;gap:10px}.brand:before{content:'✓';display:grid;place-items:center;width:34px;height:34px;border-radius:11px;background:linear-gradient(135deg,#8de9df,#b8a8ff);color:#20245a;font-size:20px}
+nav{display:flex;gap:4px;flex-wrap:wrap;align-items:center}nav a{color:#e9eaff;text-decoration:none;padding:10px 12px;border-radius:10px;font-weight:600;font-size:13px;transition:.2s}nav a:hover{background:#ffffff20;color:white;transform:translateY(-1px)}
+.menu{display:none;background:#ffffff18;border:0;color:white;font-size:25px;border-radius:9px;padding:4px 10px}
+.container{width:min(94%,1380px);margin:34px auto 60px}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;gap:15px;flex-wrap:wrap}.page-header .muted{margin:5px 0 0}
+.card,.stat{background:rgba(255,255,255,.94);padding:24px;border:1px solid #e9ecf5;border-radius:19px;margin-bottom:20px;box-shadow:0 8px 28px #28345c0a;transition:box-shadow .2s}.card:hover{box-shadow:0 12px 32px #28345c12}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:22px}
+.stat{position:relative;overflow:hidden;padding:23px 24px}.stat:after{content:'';position:absolute;width:90px;height:90px;border-radius:50%;right:-25px;top:-30px;background:linear-gradient(135deg,#e5eaff,#f0eaff);opacity:.9}.stat span{color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.7px}.stat strong{display:block;font-family:'Space Grotesk',sans-serif;font-size:34px;margin-top:10px;position:relative;z-index:1}
+.present{color:#119879}.late{color:#d78a16}.absent{color:#e24c68}
+.btn{border:none;padding:11px 16px;border-radius:10px;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:700;font-family:inherit;font-size:13px;transition:transform .18s,box-shadow .18s,filter .18s}.btn:hover{transform:translateY(-2px);box-shadow:0 7px 16px #29376b20;filter:brightness(1.03)}.primary{background:linear-gradient(120deg,var(--blue),var(--violet));color:white}.secondary{background:#eef1fa;color:#35405e}.danger{background:#ffe8ed;color:#c42e4b}.warning-btn{background:#fff0d8;color:#a86406}.small{padding:7px 10px;font-size:12px}.full{width:100%}
+input,select{width:100%;padding:12px 13px;border:1px solid #dfe4ef;border-radius:10px;margin-bottom:10px;font-size:14px;font-family:inherit;background:#fbfcff;color:var(--ink);outline:none;transition:border .2s,box-shadow .2s}input:focus,select:focus{border-color:#8292ff;box-shadow:0 0 0 4px #6577ff19;background:white}label{display:block;font-weight:700;margin:12px 0 6px;color:#39435c;font-size:13px}
+table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}th,td{text-align:left;padding:14px 13px;border-bottom:1px solid var(--line);vertical-align:middle}th{background:#f6f7fc;color:#6b7590;font-size:11px;text-transform:uppercase;letter-spacing:.65px;font-weight:700}th:first-child{border-radius:9px 0 0 9px}th:last-child{border-radius:0 9px 9px 0}tbody tr:hover,table tr:hover td{background:#fafbff}.table-container{overflow-x:auto;border-radius:10px}
+.badge{padding:6px 10px;border-radius:30px;font-size:10px;font-weight:800;letter-spacing:.45px;display:inline-block}.badge.present{background:#dff8ef;color:#087b5e}.badge.late{background:#fff1d8;color:#a96300}.badge.absent{background:#ffe5eb;color:#bd2947}.badge.active{background:#dff8ef;color:#087b5e}.badge.inactive{background:#ffe5eb;color:#bd2947}
+.alert{padding:14px 17px;border-radius:12px;margin-bottom:18px;font-weight:600;border:1px solid transparent}.alert.success{background:#e5f8f0;color:#087b5e;border-color:#c9f0e1}.alert.danger{background:#fff0f2;color:#bd2947;border-color:#ffd9e0}.alert.warning{background:#fff6e5;color:#986000;border-color:#ffebbf}.alert.info{background:#edf1ff;color:#344fc0;border-color:#dce3ff}
+.session-banner{background:linear-gradient(115deg,#e8edff,#f0eaff);color:#303d8e;padding:19px 22px;border:1px solid #dce2ff;border-radius:15px;margin-bottom:22px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}.session-banner strong{font-family:'Space Grotesk',sans-serif;font-size:17px}
+.form-card{max-width:920px}.form-actions{margin-top:22px;display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:15px}.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:15px}.check-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin-bottom:15px}.check-grid label{font-weight:600;background:#f7f8fd;border:1px solid #e9ecf5;padding:11px;border-radius:10px;margin:0}.check-grid input{width:auto;margin:0 7px 0 0;accent-color:var(--blue)}
+.scanner{max-width:760px;margin:auto}#reader{width:100%;min-height:280px;border:2px dashed #d9def0;border-radius:14px;overflow:hidden;padding:8px;background:#fafbff}#reader video{border-radius:10px}.scanner-status{text-align:center;padding:15px;margin-top:15px;border-radius:11px;background:#f0f3fc;color:#4b587b;font-weight:700}.login-page{min-height:75vh;display:flex;align-items:center;justify-content:center;padding:24px}.login-card{background:white;width:100%;max-width:440px;padding:36px;border:1px solid #e8ebf5;border-radius:24px;box-shadow:0 22px 65px #29376b18}.login-card h1{text-align:center;font-size:29px}.login-card>p{text-align:center}.login-card .primary{margin-top:8px}.muted{color:var(--muted)}.empty{text-align:center;padding:32px;color:#8a93a9}.qr-card{text-align:center;max-width:520px;margin:auto}.qr-card img{width:300px;max-width:80%;height:auto;border:12px solid white;border-radius:16px;box-shadow:0 8px 30px #202b651c}.student-profile{display:grid;grid-template-columns:1fr 1fr;gap:20px}.result{background:linear-gradient(145deg,#fff,#f8f9ff);padding:22px;border:1px solid #e5e9f6;border-radius:15px;margin-top:20px;text-align:center}.big-status{font-family:'Space Grotesk',sans-serif;font-size:23px;font-weight:700;margin:12px}.hidden{display:none}.score-input{min-width:110px}.class-filter{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.help{background:#f1f4ff;border-left:4px solid #6879f5;padding:14px 16px;margin:12px 0 18px;border-radius:8px;color:#485581}
+@media(max-width:1050px){nav a{padding:9px 8px;font-size:12px}.brand{font-size:18px}.topbar{padding:13px 18px}}
+@media(max-width:850px){.stats{grid-template-columns:repeat(2,1fr)}.grid2,.grid3,.class-filter{grid-template-columns:1fr 1fr}.check-grid{grid-template-columns:repeat(2,1fr)}nav{display:none;position:absolute;top:62px;left:12px;right:12px;background:#20265b;flex-direction:column;align-items:stretch;padding:12px;border-radius:14px;box-shadow:0 12px 28px #11193640}nav.show{display:flex}.menu{display:block}}
+@media(max-width:550px){.container{width:92%;margin:22px auto 40px}.stats,.grid2,.grid3,.class-filter{grid-template-columns:1fr}.check-grid{grid-template-columns:1fr}.student-profile{grid-template-columns:1fr}.card{padding:17px;border-radius:15px}.login-card{padding:25px 20px}.page-header{align-items:flex-start}.stat strong{font-size:30px}.session-banner{padding:16px}.topbar{padding:12px 14px}}
 </style>
 </head>
 <body>
@@ -322,10 +341,10 @@ input,select{width:100%;padding:11px;border:1px solid #cbd5e1;border-radius:8px;
 <script>function toggleMenu(){const n=document.getElementById('nav');if(n)n.classList.toggle('show');}</script>
 </body></html>
 """
-
+ 
 def render_page(content, title="Attendance Checker", **context):
     return render_template_string(BASE_HTML, content=render_template_string(content, **context), title=title)
-
+ 
 @app.route("/login", methods=["GET","POST"])
 def login():
     if request.method=="POST":
@@ -338,7 +357,7 @@ def login():
         flash("Invalid username or password.","danger")
     content="""<div class="login-page"><div class="login-card"><h1>Attendance Checker</h1><p class="muted">Login to your account</p><form method="POST"><label>Username</label><input name="username" required><label>Password</label><input type="password" name="password" id="pwd" required><p><input type="checkbox" style="width:auto" onclick="document.getElementById('pwd').type=this.checked?'text':'password'"> Show Password</p><button class="btn primary full">Log In</button></form><div style="text-align:center;margin-top:15px">No account? <a href="{{ url_for('register') }}">Register</a><br><br><a href="{{ url_for('forgot_password') }}">Forgot Password?</a></div></div></div>"""
     return render_page(content,"Login")
-
+ 
 @app.route("/register", methods=["GET","POST"])
 def register():
     if request.method=="POST":
@@ -352,7 +371,7 @@ def register():
         flash("Account created! Please log in.","success"); return redirect(url_for("login"))
     content="""<div class="login-page"><div class="login-card"><h1>Register Account</h1><form method="POST"><label>Username</label><input name="username" required><label>Email</label><input type="email" name="email" required><label>Password</label><input type="password" name="password" required><label>Confirm Password</label><input type="password" name="confirm_password" required><button class="btn primary full">Create Account</button></form><div style="text-align:center;margin-top:15px"><a href="{{ url_for('login') }}">Back to Login</a></div></div></div>"""
     return render_page(content,"Register")
-
+ 
 @app.route("/forgot-password",methods=["GET","POST"])
 def forgot_password():
     if request.method=="POST":
@@ -376,39 +395,70 @@ def forgot_password():
             if user: user.set_password(new); db.session.commit()
             session.clear(); flash("Password reset! Please log in.","success"); return redirect(url_for("login"))
     return render_page("""<div class="login-page"><div class="login-card"><h1>Forgot Password</h1><form method="POST"><input type="hidden" name="step" value="1"><label>Your Email</label><input type="email" name="email" required><button class="btn primary full">Send Code</button></form></div></div>""","Forgot Password")
-
+ 
 @app.route("/logout")
 def logout():
     session.clear(); return redirect(url_for("login"))
-
+ 
 @app.route("/")
 @app.route("/dashboard")
 @login_required
 def dashboard():
-    active=get_active_session(); total=Student.query.filter_by(active=True).count()
+    course = request.args.get("course", "").strip()
+    year_level = request.args.get("year_level", "").strip()
+    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
+    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
+    q = Student.query.filter_by(active=True)
+    if course: q = q.filter(Student.course == course)
+    if year_level: q = q.filter(Student.year_level == year_level)
+    total = q.count()
+    active = get_active_session()
+    present = late = absent = 0
     if active:
-        present=Attendance.query.filter_by(session_id=active.id,status="PRESENT").count()
-        late=Attendance.query.filter_by(session_id=active.id,status="LATE").count()
-        roster_count=len(class_students(active.course or "",active.year_level or "",active.major or "",active.section or ""))
-        absent=max(roster_count-present-late,0)
-    else:
-        present=late=0; absent=0
-    recent=Attendance.query.join(Student).order_by(Attendance.scan_time.desc()).limit(10).all()
-    banner=f"""<div class="session-banner"><strong>Active Class: {active.name}</strong><span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>{active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>""" if active else '<div class="alert warning">No class is currently active. Scheduled classes are created automatically on their scheduled days.</div>'
-    rows="".join(f"<tr><td>{a.student.student_id}</td><td>{a.student.full_name}</td><td>{a.attendance_session.name}</td><td>{a.scan_time.strftime('%I:%M %p')}</td><td><span class='badge {a.status.lower()}'>{a.status}</span></td></tr>" for a in recent) or "<tr><td colspan='5' class='empty'>No scans yet.</td></tr>"
-    content=f"""<div class="page-header"><div><h1>Dashboard</h1><p class="muted">Welcome, {session.get('username')}</p></div><a href="{url_for('scanner')}" class="btn primary">Open Scanner</a></div>{banner}<div class="stats"><div class="stat"><span>Total Active Students</span><strong>{total}</strong></div><div class="stat"><span>Present</span><strong class="present">{present}</strong></div><div class="stat"><span>Late</span><strong class="late">{late}</strong></div><div class="stat"><span>Absent</span><strong class="absent">{absent}</strong></div></div><div class="card"><h2>Recent Scans</h2><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Class</th><th>Time</th><th>Status</th></tr>{rows}</table></div></div>"""
-    return render_page(content,"Dashboard")
-
+        session_matches = (not course or active.course == course) and (not year_level or active.year_level == year_level)
+        if session_matches:
+            roster = q.filter(Student.id.in_([s.id for s in class_students(active.course or "", active.year_level or "", active.major or "", active.section or "")])).all()
+            roster_ids = [s.id for s in roster]
+            present = Attendance.query.filter(Attendance.session_id == active.id, Attendance.status == "PRESENT", Attendance.student_id.in_(roster_ids)).count() if roster_ids else 0
+            late = Attendance.query.filter(Attendance.session_id == active.id, Attendance.status == "LATE", Attendance.student_id.in_(roster_ids)).count() if roster_ids else 0
+            absent = max(len(roster_ids) - present - late, 0)
+    recent_q = Attendance.query.join(Student).join(AttendanceSession)
+    if course: recent_q = recent_q.filter(Student.course == course)
+    if year_level: recent_q = recent_q.filter(Student.year_level == year_level)
+    recent = recent_q.order_by(Attendance.scan_time.desc()).limit(10).all()
+    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
+    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
+    banner = f"""<div class="session-banner"><strong>Active Class: {active.name}</strong><span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>{active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>""" if active else '<div class="alert warning">No class is currently active. Scheduled classes are created automatically on their scheduled days.</div>'
+    rows = "".join(f"<tr><td>{a.student.student_id}</td><td>{a.student.full_name}</td><td>{a.attendance_session.name}</td><td>{a.scan_time.strftime('%I:%M %p')}</td><td><span class='badge {a.status.lower()}'>{a.status}</span></td></tr>" for a in recent) or "<tr><td colspan='5' class='empty'>No scans yet.</td></tr>"
+    content = f"""<div class="page-header"><div><h1>Dashboard</h1><p class="muted">Welcome, {session.get('username')}</p></div><a href="{url_for('scanner')}" class="btn primary">Open Scanner</a></div>{banner}
+    <div class="card"><form method="GET" class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div><div style="align-self:end"><button class="btn primary">Apply Filters</button> <a class="btn secondary" href="{url_for('dashboard')}">Reset</a></div></form></div>
+    <div class="stats"><div class="stat"><span>Total Active Students</span><strong>{total}</strong></div><div class="stat"><span>Present</span><strong class="present">{present}</strong></div><div class="stat"><span>Late</span><strong class="late">{late}</strong></div><div class="stat"><span>Absent</span><strong class="absent">{absent}</strong></div></div>
+    <div class="card"><h2>Recent Scans</h2><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Class</th><th>Time</th><th>Status</th></tr>{rows}</table></div></div>"""
+    return render_page(content, "Dashboard")
+ 
+ 
 @app.route("/students")
 @login_required
 def students():
-    search=request.args.get("search","").strip(); q=Student.query
-    if search: q=q.filter((Student.student_id.ilike(f"%{search}%"))|(Student.full_name.ilike(f"%{search}%")))
-    items=q.order_by(Student.full_name).all()
-    rows="".join(f"""<tr><td>{s.student_id}</td><td>{s.full_name}</td><td>{s.course}</td><td>{s.year_level}</td><td>{s.major or ""}</td><td>{s.section or ""}</td><td><span class="badge {'active' if s.active else 'inactive'}">{'ACTIVE' if s.active else 'INACTIVE'}</span></td><td><a href="{url_for('student_profile',id=s.id)}" class="btn small primary">QR</a> <a href="{url_for('edit_student',id=s.id)}" class="btn small secondary">Edit</a></td></tr>""" for s in items) or "<tr><td colspan='8' class='empty'>No students found.</td></tr>"
-    content=f"""<div class="page-header"><h1>Students</h1><a href="{url_for('add_student')}" class="btn primary">+ Add Student</a></div><div class="card"><form method="GET"><input name="search" value="{search}" placeholder="Search Student ID or Name"><button class="btn secondary">Search</button></form></div><div class="card"><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
-    return render_page(content,"Students")
-
+    search = request.args.get("search", "").strip()
+    course = request.args.get("course", "").strip()
+    year_level = request.args.get("year_level", "").strip()
+    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
+    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
+    q = Student.query
+    if search: q = q.filter((Student.student_id.ilike(f"%{search}%")) | (Student.full_name.ilike(f"%{search}%")))
+    if course: q = q.filter(Student.course == course)
+    if year_level: q = q.filter(Student.year_level == year_level)
+    items = q.order_by(Student.full_name).all()
+    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
+    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
+    rows = "".join(f"""<tr><td>{s.student_id}</td><td>{s.full_name}</td><td>{s.course}</td><td>{s.year_level}</td><td>{s.major or ""}</td><td>{s.section or ""}</td><td><span class="badge {'active' if s.active else 'inactive'}">{'ACTIVE' if s.active else 'INACTIVE'}</span></td><td><a href="{url_for('student_profile',id=s.id)}" class="btn small primary">QR</a> <a href="{url_for('edit_student',id=s.id)}" class="btn small secondary">Edit</a></td></tr>""" for s in items) or "<tr><td colspan='8' class='empty'>No students found.</td></tr>"
+    content = f"""<div class="page-header"><h1>Students</h1><a href="{url_for('add_student')}" class="btn primary">+ Add Student</a></div>
+    <div class="card"><form method="GET"><input name="search" value="{search}" placeholder="Search Student ID or Name"><div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div></div><button class="btn primary">Apply Filters / Search</button> <a class="btn secondary" href="{url_for('students')}">Reset</a></form></div>
+    <div class="card"><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
+    return render_page(content, "Students")
+ 
+ 
 @app.route("/students/add",methods=["GET","POST"])
 @login_required
 def add_student():
@@ -420,7 +470,7 @@ def add_student():
         flash("Student added and QR generated.","success"); return redirect(url_for("student_profile",id=s.id))
     content="""<div class="page-header"><h1>Add Student</h1></div><div class="card form-card"><form method="POST"><div class="grid2"><div><label>Student ID</label><input name="student_id" required></div><div><label>Full Name</label><input name="full_name" required></div><div><label>Course / Program</label><input name="course" placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level" placeholder="2nd Year" required></div><div><label>Major</label><input name="major" placeholder="Computer Technology"></div><div><label>Section</label><input name="section" placeholder="A"></div></div><label>Status</label><select name="active"><option value="1">Active</option><option value="0">Inactive</option></select><div class="form-actions"><a href="{{ url_for('students') }}" class="btn secondary">Cancel</a><button class="btn primary">Add Student</button></div></form></div>"""
     return render_page(content,"Add Student")
-
+ 
 @app.route("/students/profile/<int:id>")
 @login_required
 def student_profile(id):
@@ -428,12 +478,12 @@ def student_profile(id):
     if not qr_path(s.student_id).exists(): generate_student_qr(s.student_id)
     content=f"""<div class="page-header"><h1>{s.full_name}</h1><a href="{url_for('students')}" class="btn secondary">Back</a></div><div class="student-profile"><div class="card"><p><strong>ID:</strong> {s.student_id}</p><p><strong>Course:</strong> {s.course}</p><p><strong>Year:</strong> {s.year_level}</p><p><strong>Major:</strong> {s.major or 'Not set'}</p><p><strong>Section:</strong> {s.section or 'Not set'}</p><p><strong>Status:</strong> {'ACTIVE' if s.active else 'INACTIVE'}</p></div><div class="card qr-card"><h3>QR Code</h3><img src="{url_for('student_qr',student_id=s.student_id)}"><p class="muted">ID: {s.student_id}</p><a class="btn primary" href="{url_for('student_qr',student_id=s.student_id)}" download>Download</a></div></div>"""
     return render_page(content,"Profile")
-
+ 
 @app.route("/qr_codes/<path:student_id>.png")
 @login_required
 def student_qr(student_id):
     return send_from_directory(QR_FOLDER,f"{student_id}.png")
-
+ 
 @app.route("/students/edit/<int:id>",methods=["GET","POST"])
 @login_required
 def edit_student(id):
@@ -449,7 +499,7 @@ def edit_student(id):
         generate_student_qr(new); flash("Student updated.","success"); return redirect(url_for("students"))
     content=f"""<div class="page-header"><h1>Edit Student</h1></div><div class="card form-card"><form method="POST"><label>Student ID</label><input name="student_id" value="{s.student_id}" required><label>Full Name</label><input name="full_name" value="{s.full_name}" required><div class="grid2"><div><label>Course</label><input name="course" value="{s.course}" required></div><div><label>Year Level</label><input name="year_level" value="{s.year_level}" required></div><div><label>Major</label><input name="major" value="{s.major or ''}"></div><div><label>Section</label><input name="section" value="{s.section or ''}"></div></div><label>Status</label><select name="active"><option value="1" {'selected' if s.active else ''}>Active</option><option value="0" {'selected' if not s.active else ''}>Inactive</option></select><div class="form-actions"><a href="{url_for('students')}" class="btn secondary">Cancel</a><button class="btn primary">Save</button></div></form></div>"""
     return render_page(content,"Edit Student")
-
+ 
 @app.route("/schedules")
 @login_required
 def schedules():
@@ -461,7 +511,7 @@ def schedules():
         rows+=f"<tr><td>{s.name}</td><td>{s.course}</td><td>{s.year_level}</td><td>{s.major or ''}</td><td>{s.section or ''}</td><td>{s.days}</td><td>{s.start_time.strftime('%I:%M %p')}</td><td>{s.late_time.strftime('%I:%M %p')}</td><td>{s.end_time.strftime('%I:%M %p')}</td><td><span class='badge {'active' if s.active else 'inactive'}'>{'ACTIVE' if s.active else 'INACTIVE'}</span></td><td>{buttons}</td></tr>"
     content=f"""<div class="page-header"><div><h1>Class Schedules</h1><p class="muted">Create a class once. Attendance sessions are automatically generated on the selected days.</p></div><a href="{url_for('add_schedule')}" class="btn primary">+ Add Schedule</a></div><div class="card"><div class="table-container"><table><tr><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Days</th><th>Start</th><th>Late</th><th>End</th><th>Status</th><th>Action</th></tr>{rows or "<tr><td colspan='11' class='empty'>No schedules yet.</td></tr>"}</table></div></div>"""
     return render_page(content,"Schedules")
-
+ 
 def schedule_form_content(s=None):
     editing=s is not None
     vals={"name":s.name if s else "","course":s.course if s else "","year":s.year_level if s else "","major":s.major if s else "","section":s.section if s else "","start":s.start_time.strftime("%H:%M") if s else "08:00","late":s.late_time.strftime("%H:%M") if s else "08:15","end":s.end_time.strftime("%H:%M") if s else "10:00"}
@@ -469,7 +519,7 @@ def schedule_form_content(s=None):
     checks="".join(f"<label><input type='checkbox' name='days' value='{d}' {'checked' if d in chosen else ''}>{d}</label>" for d in DAY_NAMES)
     action=url_for("edit_schedule",id=s.id) if editing else url_for("add_schedule")
     return f"""<div class="page-header"><h1>{'Edit' if editing else 'Add'} Class Schedule</h1></div><div class="card form-card"><div class="help">Set the recurring class here once. The system will automatically create/use the attendance session on every selected weekday.</div><form method="POST"><label>Schedule Name</label><input name="name" value="{vals['name']}" placeholder="Computer Programming" required><div class="grid2"><div><label>Course / Program</label><input name="course" value="{vals['course']}" placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level" value="{vals['year']}" placeholder="2nd Year" required></div><div><label>Major</label><input name="major" value="{vals['major']}" placeholder="Computer Technology"></div><div><label>Section (Optional)</label><input name="section" value="{vals['section']}" placeholder="A"></div></div><label>Days</label><div class="check-grid">{checks}</div><div class="grid3"><div><label>Start Time</label><input type="time" name="start_time" value="{vals['start']}" required></div><div><label>Late After</label><input type="time" name="late_time" value="{vals['late']}" required></div><div><label>End Time</label><input type="time" name="end_time" value="{vals['end']}" required></div></div><div class="form-actions"><a href="{url_for('schedules')}" class="btn secondary">Cancel</a><button class="btn primary">Save Schedule</button></div></form></div>"""
-
+ 
 @app.route("/schedules/add",methods=["GET","POST"])
 @login_required
 def add_schedule():
@@ -483,7 +533,7 @@ def add_schedule():
         if not s.name or not s.course or not s.year_level: flash("Schedule name, course, and year level are required.","danger"); return redirect(url_for("add_schedule"))
         db.session.add(s); db.session.commit(); create_today_sessions(); flash("Recurring schedule created.","success"); return redirect(url_for("schedules"))
     return render_page(schedule_form_content(),"Add Schedule")
-
+ 
 @app.route("/schedules/edit/<int:id>",methods=["GET","POST"])
 @login_required
 def edit_schedule(id):
@@ -497,18 +547,18 @@ def edit_schedule(id):
         s.name=request.form.get("name","").strip(); s.course=request.form.get("course","").strip(); s.year_level=request.form.get("year_level","").strip(); s.major=request.form.get("major","").strip() or None; s.section=request.form.get("section","").strip() or None; s.days=",".join(days); s.start_time=st; s.late_time=lt; s.end_time=et
         db.session.commit(); flash("Schedule updated. Existing attendance sessions are preserved.","success"); return redirect(url_for("schedules"))
     return render_page(schedule_form_content(s),"Edit Schedule")
-
+ 
 @app.route("/schedules/toggle/<int:id>",methods=["POST"])
 @login_required
 def toggle_schedule(id):
     s=AttendanceSchedule.query.get_or_404(id); s.active=not s.active; db.session.commit(); flash(f"Schedule {'activated' if s.active else 'deactivated'}.","success"); return redirect(url_for("schedules"))
-
+ 
 @app.route("/schedules/delete/<int:id>",methods=["POST"])
 @login_required
 def delete_schedule(id):
     s=AttendanceSchedule.query.get_or_404(id)
     db.session.delete(s); db.session.commit(); flash("Schedule deleted. Existing attendance records were preserved.","success"); return redirect(url_for("schedules"))
-
+ 
 @app.route("/sessions")
 @login_required
 def sessions():
@@ -517,13 +567,13 @@ def sessions():
     rows="".join(f"""<tr><td>{x.session_date}</td><td>{x.name}</td><td>{x.course or ''}</td><td>{x.year_level or ''}</td><td>{x.start_time.strftime('%I:%M %p')}</td><td>{x.end_time.strftime('%I:%M %p')}</td><td><span class="badge {'active' if x.status=='OPEN' else 'inactive'}">{x.status}</span></td><td>{('<form method="POST" action="'+url_for('close_session',id=x.id)+'"><button class="btn small danger">Close</button></form>') if x.status=='OPEN' else 'Completed'}</td></tr>""" for x in items) or "<tr><td colspan='8' class='empty'>No sessions.</td></tr>"
     content=f"""<div class="page-header"><div><h1>Attendance Sessions</h1><p class="muted">Recurring schedules create these automatically.</p></div></div><div class="card"><div class="table-container"><table><tr><th>Date</th><th>Class</th><th>Course</th><th>Year</th><th>Start</th><th>End</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Sessions")
-
+ 
 @app.route("/sessions/create", methods=["POST"])
 @login_required
 def create_session():
     flash("Manual session creation has been replaced by recurring Class Schedules. Create the class once under Schedules.", "info")
     return redirect(url_for("schedules"))
-
+ 
 @app.route("/sessions/close/<int:id>",methods=["POST"])
 @login_required
 def close_session(id):
@@ -533,7 +583,7 @@ def close_session(id):
     for st in roster:
         if st.id not in scanned: db.session.add(Attendance(student_id=st.id,session_id=sess.id,scan_time=now,status="ABSENT"))
     sess.status="CLOSED"; db.session.commit(); flash("Session closed. Unscanned class members marked ABSENT.","success"); return redirect(url_for("sessions"))
-
+ 
 @app.route("/scan",methods=["POST"])
 @login_required
 def scan():
@@ -552,7 +602,7 @@ def scan():
     db.session.add(Attendance(student_id=student.id,session_id=active.id,scan_time=datetime.now(),status=status)); db.session.commit()
     now=datetime.now()
     return jsonify({"success":True,"status":status,"date":date.today().strftime("%B %d, %Y"),"time":now.strftime("%I:%M:%S %p"),"student":{"name":student.full_name,"student_id":student.student_id,"course":student.course,"year":student.year_level,"major":student.major or "","section":student.section or ""}})
-
+ 
 @app.route("/scanner")
 @login_required
 def scanner():
@@ -566,19 +616,32 @@ function showResult(d){{const r=document.getElementById('result');r.classList.re
 const html5QrCode=new Html5Qrcode('reader');html5QrCode.start({{facingMode:'environment'}},{{fps:10,qrbox:{{width:250,height:250}}}},txt=>{{if(!processing)processScan(txt);}},()=>{{}}).catch(e=>statusMsg('Camera error: '+e.message));
 </script>"""
     return render_page(content,"QR Scanner")
-
+ 
 @app.route("/attendance")
 @login_required
 def attendance():
-    records=Attendance.query.join(Student).join(AttendanceSession).order_by(Attendance.scan_time.desc()).all()
-    rows="".join(f"<tr><td>{r.student.student_id}</td><td>{r.student.full_name}</td><td>{r.attendance_session.name}</td><td>{r.attendance_session.session_date}</td><td>{r.scan_time.strftime('%I:%M %p')}</td><td><span class='badge {r.status.lower()}'>{r.status}</span></td></tr>" for r in records) or "<tr><td colspan='6' class='empty'>No attendance records.</td></tr>"
-    content=f"""<div class="page-header"><h1>Attendance Records</h1></div><div class="card"><div class="table-container"><table><tr><th>Student ID</th><th>Name</th><th>Class</th><th>Date</th><th>Time</th><th>Status</th></tr>{rows}</table></div></div>"""
-    return render_page(content,"Attendance")
-
+    course = request.args.get("course", "").strip()
+    year_level = request.args.get("year_level", "").strip()
+    attendance_date = request.args.get("date", "").strip()
+    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
+    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
+    q = Attendance.query.join(Student).join(AttendanceSession)
+    if course: q = q.filter(Student.course == course)
+    if year_level: q = q.filter(Student.year_level == year_level)
+    if attendance_date: q = q.filter(AttendanceSession.session_date == attendance_date)
+    records = q.order_by(Attendance.scan_time.desc()).all()
+    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
+    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
+    rows = "".join(f"<tr><td>{r.student.student_id}</td><td>{r.student.full_name}</td><td>{r.student.course}</td><td>{r.student.major or ''}</td><td>{r.student.year_level}</td><td>{r.attendance_session.session_date}</td><td>{r.scan_time.strftime('%I:%M %p') if r.status != 'ABSENT' else '—'}</td><td><span class='badge {r.status.lower()}'>{r.status}</span></td></tr>" for r in records) or "<tr><td colspan='8' class='empty'>No attendance records.</td></tr>"
+    content = f"""<div class="page-header"><h1>Attendance Records</h1></div><div class="card"><form method="GET"><div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div><div><label>Date</label><input type="date" name="date" value="{attendance_date}"></div></div><button class="btn primary">Apply Filters</button> <a class="btn secondary" href="{url_for('attendance')}">Reset</a></form></div>
+    <div class="card"><div class="table-container"><table><tr><th>Student ID</th><th>Name</th><th>Course</th><th>Major</th><th>Year Level</th><th>Date</th><th>Time In</th><th>Status</th></tr>{rows}</table></div></div>"""
+    return render_page(content, "Attendance")
+ 
+ 
 def get_class_options():
     pairs=db.session.query(Student.course,Student.year_level,Student.major,Student.section).filter(Student.active==True).distinct().order_by(Student.course,Student.year_level,Student.major,Student.section).all()
     return pairs
-
+ 
 @app.route("/assessments")
 @login_required
 def assessments():
@@ -586,7 +649,7 @@ def assessments():
     rows="".join(f"<tr><td>{a.assessment_date}</td><td>{a.student.student_id}</td><td>{a.student.full_name}</td><td>{a.course or a.student.course}</td><td>{a.assessment_name or a.assessment_type}</td><td>{a.score:.1f}/{a.total_score:.1f}</td><td>{a.percentage:.1f}%</td><td>{(a.weight or 0):.1f}%</td></tr>" for a in records) or "<tr><td colspan='8' class='empty'>No assessments yet.</td></tr>"
     content=f"""<div class="page-header"><div><h1>Assessments / Grades</h1><p class="muted">Select a class and assessment. The student roster comes automatically from the Student database.</p></div><a href="{url_for('add_assessment')}" class="btn primary">+ Class Assessment</a></div><div class="card"><div class="table-container"><table><tr><th>Date</th><th>ID</th><th>Student</th><th>Class</th><th>Assessment</th><th>Score</th><th>Percentage</th><th>Weight</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Assessments")
-
+ 
 @app.route("/assessments/configs")
 @login_required
 def assessment_configs():
@@ -594,7 +657,7 @@ def assessment_configs():
     rows="".join(f"<tr><td>{c.course}</td><td>{c.year_level}</td><td>{c.major or ''}</td><td>{c.section or ''}</td><td>{c.assessment_type}</td><td>{c.assessment_name}</td><td>{c.total_score:g}</td><td>{c.weight:g}%</td></tr>" for c in items) or "<tr><td colspan='8' class='empty'>No saved assessment configurations.</td></tr>"
     content=f"""<div class="page-header"><h1>Saved Assessment Configurations</h1><a href="{url_for('add_assessment')}" class="btn primary">+ New Assessment</a></div><div class="card"><div class="table-container"><table><tr><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Type</th><th>Name</th><th>Total</th><th>Weight</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Assessment Configurations")
-
+ 
 @app.route("/assessments/add",methods=["GET","POST"])
 @login_required
 def add_assessment():
@@ -655,14 +718,14 @@ async function loadConfig(){{
 document.getElementById('totalScore').addEventListener('input',()=>{{document.querySelectorAll('.score-input').forEach(calc);}});
 </script>"""
     return render_page(content,"Class-Based Assessment")
-
+ 
 @app.route("/api/class-students")
 @login_required
 def api_class_students():
     course=request.args.get("course","").strip(); year=request.args.get("year_level","").strip(); major=request.args.get("major","").strip(); section=request.args.get("section","").strip()
     items=class_students(course,year,major,section)
     return jsonify({"students":[{"id":s.id,"student_id":s.student_id,"full_name":s.full_name} for s in items]})
-
+ 
 @app.route("/api/assessment-config")
 @login_required
 def api_assessment_config():
@@ -670,9 +733,9 @@ def api_assessment_config():
     cfg=AssessmentConfig.query.filter_by(course=c,year_level=y,major=m or None,section=s or None,assessment_type=t,assessment_name=n,active=True).first()
     if not cfg:return jsonify({"found":False})
     return jsonify({"found":True,"total_score":cfg.total_score,"weight":cfg.weight})
-
+ 
 with app.app_context():
     migrate_existing_database()
-
+ 
 if __name__=="__main__":
     app.run(debug=True)
