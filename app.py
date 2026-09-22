@@ -4,6 +4,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime, date, time
 from functools import wraps
 from pathlib import Path
+from sqlalchemy import and_, or_, exists
 import qrcode, smtplib, random, string, sqlite3, os
 from email.mime.text import MIMEText
  
@@ -23,17 +24,29 @@ QR_FOLDER = BASE_DIR / "qr_codes"
 QR_FOLDER.mkdir(exist_ok=True)
  
 class User(db.Model):
+    __tablename__ = "user"
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
     email = db.Column(db.String(120), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), default="faculty")
+    role = db.Column(db.String(20), nullable=False, default="faculty")
+
+    schedules = db.relationship(
+        "FacultySchedule",
+        back_populates="faculty",
+        cascade="all, delete-orphan",
+        foreign_keys="FacultySchedule.faculty_id",
+    )
+
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
+
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
- 
+
+
 class Student(db.Model):
+    __tablename__ = "student"
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.String(50), unique=True, nullable=False)
     full_name = db.Column(db.String(150), nullable=False)
@@ -42,8 +55,12 @@ class Student(db.Model):
     major = db.Column(db.String(100), nullable=True)
     section = db.Column(db.String(50), nullable=True)
     active = db.Column(db.Boolean, default=True)
-    attendances = db.relationship("Attendance", backref="student", lazy=True, cascade="all, delete-orphan")
- 
+
+    attendances = db.relationship(
+        "Attendance", backref="student", lazy=True, cascade="all, delete-orphan"
+    )
+
+
 class AttendanceSchedule(db.Model):
     __tablename__ = "attendance_schedules"
     id = db.Column(db.Integer, primary_key=True)
@@ -57,8 +74,53 @@ class AttendanceSchedule(db.Model):
     late_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
     active = db.Column(db.Boolean, default=True)
- 
+
+    faculty_assignments = db.relationship(
+        "FacultySchedule",
+        back_populates="schedule",
+        cascade="all, delete-orphan",
+        lazy=True,
+    )
+    sessions = db.relationship(
+        "AttendanceSession",
+        back_populates="schedule",
+        lazy=True,
+    )
+
+
+class FacultySchedule(db.Model):
+    __tablename__ = "faculty_schedules"
+    id = db.Column(db.Integer, primary_key=True)
+    faculty_id = db.Column(
+        db.Integer, db.ForeignKey("user.id"), nullable=False, index=True
+    )
+    schedule_id = db.Column(
+        db.Integer,
+        db.ForeignKey("attendance_schedules.id"),
+        nullable=False,
+        index=True,
+    )
+    assigned_at = db.Column(db.DateTime, nullable=False, default=datetime.now)
+
+    faculty = db.relationship(
+        "User",
+        back_populates="schedules",
+        foreign_keys=[faculty_id],
+    )
+    schedule = db.relationship(
+        "AttendanceSchedule",
+        back_populates="faculty_assignments",
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "faculty_id", "schedule_id", name="unique_faculty_schedule"
+        ),
+    )
+
+
 class AttendanceSession(db.Model):
+    __tablename__ = "attendance_session"
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(150), nullable=False)
     session_date = db.Column(db.Date, nullable=False)
@@ -66,24 +128,48 @@ class AttendanceSession(db.Model):
     late_time = db.Column(db.Time, nullable=False)
     end_time = db.Column(db.Time, nullable=False)
     status = db.Column(db.String(20), default="OPEN")
-    schedule_id = db.Column(db.Integer, nullable=True, index=True)
+    schedule_id = db.Column(
+        db.Integer,
+        db.ForeignKey("attendance_schedules.id"),
+        nullable=True,
+        index=True,
+    )
     course = db.Column(db.String(100), nullable=True)
     year_level = db.Column(db.String(50), nullable=True)
     major = db.Column(db.String(100), nullable=True)
     section = db.Column(db.String(50), nullable=True)
-    attendances = db.relationship("Attendance", backref="attendance_session", lazy=True, cascade="all, delete-orphan")
- 
+
+    schedule = db.relationship("AttendanceSchedule", back_populates="sessions")
+    attendances = db.relationship(
+        "Attendance", backref="attendance_session", lazy=True,
+        cascade="all, delete-orphan"
+    )
+
+
 class Attendance(db.Model):
+    __tablename__ = "attendance"
     id = db.Column(db.Integer, primary_key=True)
     student_id = db.Column(db.Integer, db.ForeignKey("student.id"), nullable=False)
-    session_id = db.Column(db.Integer, db.ForeignKey("attendance_session.id"), nullable=False)
+    session_id = db.Column(
+        db.Integer, db.ForeignKey("attendance_session.id"), nullable=False
+    )
     scan_time = db.Column(db.DateTime, nullable=False)
     status = db.Column(db.String(20), nullable=False)
-    __table_args__ = (db.UniqueConstraint("student_id", "session_id", name="unique_student_session"),)
- 
+
+    __table_args__ = (
+        db.UniqueConstraint(
+            "student_id", "session_id", name="unique_student_session"
+        ),
+    )
+
+
 class AssessmentConfig(db.Model):
     __tablename__ = "assessment_configs"
     id = db.Column(db.Integer, primary_key=True)
+    faculty_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    schedule_id = db.Column(
+        db.Integer, db.ForeignKey("attendance_schedules.id"), nullable=True, index=True
+    )
     course = db.Column(db.String(100), nullable=False)
     year_level = db.Column(db.String(50), nullable=False)
     major = db.Column(db.String(100), nullable=True)
@@ -94,11 +180,18 @@ class AssessmentConfig(db.Model):
     weight = db.Column(db.Float, nullable=False, default=0)
     active = db.Column(db.Boolean, default=True)
     created_at = db.Column(db.DateTime, default=datetime.now)
- 
+
+
 class Assessment(db.Model):
     __tablename__ = "assessments"
     id = db.Column(db.Integer, primary_key=True)
-    student_id = db.Column(db.Integer, db.ForeignKey("student.id"), nullable=False, index=True)
+    student_id = db.Column(
+        db.Integer, db.ForeignKey("student.id"), nullable=False, index=True
+    )
+    faculty_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+    schedule_id = db.Column(
+        db.Integer, db.ForeignKey("attendance_schedules.id"), nullable=True, index=True
+    )
     assessment_type = db.Column(db.String(50), nullable=False)
     score = db.Column(db.Float, nullable=False)
     total_score = db.Column(db.Float, nullable=False)
@@ -112,8 +205,8 @@ class Assessment(db.Model):
     year_level = db.Column(db.String(50), nullable=True)
     major = db.Column(db.String(100), nullable=True)
     section = db.Column(db.String(50), nullable=True)
-    student = db.relationship("Student", backref=db.backref("assessments", lazy=True, cascade="all, delete-orphan"))
- 
+
+
 ASSESSMENT_TYPES = ["Quiz", "Activity", "Exam", "Performance", "Oral Recitation"]
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
  
@@ -140,33 +233,227 @@ If you did not request this, ignore this email."""
         print("Email Error:", e)
         return False
  
+def current_user():
+    uid = session.get("user_id")
+    return db.session.get(User, uid) if uid else None
+
+
 def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        if "user_id" not in session:
+        if not session.get("user_id"):
+            return redirect(url_for("login"))
+        if not current_user():
+            session.clear()
             return redirect(url_for("login"))
         return f(*args, **kwargs)
     return decorated
- 
-def parse_time(value):
-    return datetime.strptime(value, "%H:%M").time()
- 
-def selected_days(value):
-    if not value:
+
+
+def roles_required(*roles):
+    def decorator(f):
+        @wraps(f)
+        @login_required
+        def decorated(*args, **kwargs):
+            user = current_user()
+            if not user or user.role not in roles:
+                if request.is_json or request.path.startswith("/api/") or request.path == "/scan":
+                    return jsonify({"success": False, "message": "Forbidden"}), 403
+                flash("You are not authorized to perform that action.", "danger")
+                return redirect(url_for("dashboard"))
+            return f(*args, **kwargs)
+        return decorated
+    return decorator
+
+
+def is_admin(user=None):
+    user = user or current_user()
+    return bool(user and user.role == "admin")
+
+
+def assigned_schedule_ids(user=None):
+    user = user or current_user()
+    if not user or user.role != "faculty":
         return []
-    return [x.strip() for x in value.split(",") if x.strip() in DAY_NAMES]
- 
-def schedule_matches_today(s):
-    return DAY_NAMES[date.today().weekday()] in selected_days(s.days)
- 
-def class_students(course, year_level, major="", section=""):
+    return db.session.query(FacultySchedule.schedule_id).filter(
+        FacultySchedule.faculty_id == user.id
+    )
+
+
+def schedule_access_query(user=None):
+    user = user or current_user()
+    if not user:
+        return AttendanceSchedule.query.filter(db.literal(False))
+    if user.role == "admin":
+        return AttendanceSchedule.query
+    return AttendanceSchedule.query.join(
+        FacultySchedule, FacultySchedule.schedule_id == AttendanceSchedule.id
+    ).filter(FacultySchedule.faculty_id == user.id)
+
+
+def get_schedule_or_forbidden(schedule_id, user=None):
+    schedule = db.session.get(AttendanceSchedule, schedule_id)
+    if not schedule:
+        return None, (jsonify({"success": False, "message": "Schedule not found"}), 404)
+    user = user or current_user()
+    if user.role != "admin":
+        allowed = db.session.query(FacultySchedule.id).filter_by(
+            faculty_id=user.id, schedule_id=schedule.id
+        ).first()
+        if not allowed:
+            return None, (jsonify({"success": False, "message": "Forbidden"}), 403)
+    return schedule, None
+
+
+def faculty_can_access_schedule(schedule_id, user=None):
+    user = user or current_user()
+    if not user:
+        return False
+    if user.role == "admin":
+        return True
+    return db.session.query(FacultySchedule.id).filter_by(
+        faculty_id=user.id, schedule_id=schedule_id
+    ).first() is not None
+
+
+def faculty_can_access_class(course, year_level, major="", section="", user=None):
+    user = user or current_user()
+    if not user:
+        return False
+    if user.role == "admin":
+        return True
+    q = db.session.query(FacultySchedule.id).join(
+        AttendanceSchedule,
+        AttendanceSchedule.id == FacultySchedule.schedule_id
+    ).filter(
+        FacultySchedule.faculty_id == user.id,
+        AttendanceSchedule.course == course,
+        AttendanceSchedule.year_level == year_level,
+    )
+    if major:
+        q = q.filter(AttendanceSchedule.major == major)
+    else:
+        q = q.filter(or_(AttendanceSchedule.major.is_(None), AttendanceSchedule.major == ""))
+    if section:
+        q = q.filter(AttendanceSchedule.section == section)
+    else:
+        q = q.filter(or_(AttendanceSchedule.section.is_(None), AttendanceSchedule.section == ""))
+    return q.first() is not None
+
+
+def faculty_can_access_student(student, user=None):
+    if not student:
+        return False
+    return faculty_can_access_class(
+        student.course, student.year_level, student.major or "", student.section or "", user
+    )
+
+
+def faculty_can_access_session(sess, user=None):
+    user = user or current_user()
+    if not sess or not user:
+        return False
+    if user.role == "admin":
+        return True
+    if sess.schedule_id and faculty_can_access_schedule(sess.schedule_id, user):
+        return True
+    return faculty_can_access_class(
+        sess.course or "", sess.year_level or "", sess.major or "", sess.section or "", user
+    )
+
+
+def faculty_can_access_assessment(a, user=None):
+    user = user or current_user()
+    if not a or not user:
+        return False
+    if user.role == "admin":
+        return True
+    if a.schedule_id and faculty_can_access_schedule(a.schedule_id, user):
+        return True
+    return faculty_can_access_class(
+        a.course or "", a.year_level or "", a.major or "", a.section or "", user
+    )
+
+
+def accessible_students_query(user=None, active_only=False):
+    user = user or current_user()
+    q = Student.query
+    if active_only:
+        q = q.filter(Student.active == True)
+    if not user or user.role == "admin":
+        return q
+
+    assignment_exists = exists().where(
+        and_(
+            FacultySchedule.faculty_id == user.id,
+            FacultySchedule.schedule_id == AttendanceSchedule.id,
+            AttendanceSchedule.course == Student.course,
+            AttendanceSchedule.year_level == Student.year_level,
+            or_(
+                AttendanceSchedule.major == Student.major,
+                and_(
+                    AttendanceSchedule.major.is_(None),
+                    or_(Student.major.is_(None), Student.major == "")
+                ),
+                and_(
+                    Student.major.is_(None),
+                    AttendanceSchedule.major == ""
+                ),
+            ),
+            or_(
+                AttendanceSchedule.section == Student.section,
+                and_(
+                    AttendanceSchedule.section.is_(None),
+                    or_(Student.section.is_(None), Student.section == "")
+                ),
+                and_(
+                    Student.section.is_(None),
+                    AttendanceSchedule.section == ""
+                ),
+            ),
+        )
+    )
+    return q.filter(assignment_exists)
+
+
+def class_students(course, year_level, major="", section="", user=None):
     q = Student.query.filter_by(active=True, course=course, year_level=year_level)
     if major:
         q = q.filter(Student.major == major)
+    else:
+        q = q.filter(or_(Student.major.is_(None), Student.major == ""))
     if section:
         q = q.filter(Student.section == section)
+    else:
+        q = q.filter(or_(Student.section.is_(None), Student.section == ""))
+    if user and user.role != "admin":
+        q = q.filter(
+            exists().where(
+                and_(
+                    FacultySchedule.faculty_id == user.id,
+                    FacultySchedule.schedule_id == AttendanceSchedule.id,
+                    AttendanceSchedule.course == Student.course,
+                    AttendanceSchedule.year_level == Student.year_level,
+                    or_(
+                        AttendanceSchedule.major == Student.major,
+                        and_(
+                            AttendanceSchedule.major.is_(None),
+                            or_(Student.major.is_(None), Student.major == "")
+                        )
+                    ),
+                    or_(
+                        AttendanceSchedule.section == Student.section,
+                        and_(
+                            AttendanceSchedule.section.is_(None),
+                            or_(Student.section.is_(None), Student.section == "")
+                        )
+                    ),
+                )
+            )
+        )
     return q.order_by(Student.full_name).all()
- 
+
+
 def create_today_sessions():
     today = date.today()
     today_name = DAY_NAMES[today.weekday()]
@@ -175,7 +462,9 @@ def create_today_sessions():
     for s in schedules:
         if today_name not in selected_days(s.days):
             continue
-        existing = AttendanceSession.query.filter_by(schedule_id=s.id, session_date=today).first()
+        existing = AttendanceSession.query.filter_by(
+            schedule_id=s.id, session_date=today
+        ).first()
         if existing:
             continue
         db.session.add(AttendanceSession(
@@ -188,7 +477,8 @@ def create_today_sessions():
     if created:
         db.session.commit()
     return created
- 
+
+
 def close_expired_sessions():
     now = datetime.now()
     sessions = AttendanceSession.query.filter(
@@ -198,7 +488,10 @@ def close_expired_sessions():
     changed = False
     for sess in sessions:
         if now.time() > sess.end_time:
-            roster = class_students(sess.course or "", sess.year_level or "", sess.major or "", sess.section or "")
+            roster = class_students(
+                sess.course or "", sess.year_level or "",
+                sess.major or "", sess.section or "", user=None
+            )
             scanned = {a.student_id for a in sess.attendances}
             for st in roster:
                 if st.id not in scanned:
@@ -210,56 +503,78 @@ def close_expired_sessions():
             changed = True
     if changed:
         db.session.commit()
- 
-def get_active_session():
+
+
+def get_active_session(user=None):
+    user = user or current_user()
     create_today_sessions()
     close_expired_sessions()
     now = datetime.now().time()
-    return AttendanceSession.query.filter(
+    q = AttendanceSession.query.filter(
         AttendanceSession.session_date == date.today(),
         AttendanceSession.status == "OPEN",
         AttendanceSession.start_time <= now,
         AttendanceSession.end_time >= now
-    ).order_by(AttendanceSession.id.desc()).first()
- 
+    )
+    if user and user.role != "admin":
+        q = q.join(
+            FacultySchedule, FacultySchedule.schedule_id == AttendanceSession.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    return q.order_by(AttendanceSession.id.desc()).first()
+
+
 def determine_status(attendance_session):
     return "PRESENT" if datetime.now().time() < attendance_session.late_time else "LATE"
- 
+
+
 def qr_path(student_id):
     return QR_FOLDER / f"{str(student_id).strip()}.png"
- 
+
+
 def generate_student_qr(student_id):
     path = qr_path(student_id)
-    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M, box_size=10, border=4)
+    qr = qrcode.QRCode(
+        version=None, error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10, border=4
+    )
     qr.add_data(str(student_id))
     qr.make(fit=True)
     qr.make_image().save(path)
     return path
- 
+
+
 def delete_student_qr(student_id):
     path = qr_path(student_id)
     if path.exists():
         path.unlink()
- 
-def db_columns(table):
-    con = sqlite3.connect(get_db_path())
-    try:
-        return {row[1] for row in con.execute(f"PRAGMA table_info({table})").fetchall()}
-    finally:
-        con.close()
- 
+
+
 def get_db_path():
     uri = app.config["SQLALCHEMY_DATABASE_URI"]
     if uri.startswith("sqlite:///"):
         p = uri.replace("sqlite:///", "", 1)
         return str((Path(app.instance_path) / p).resolve())
     return str((BASE_DIR / "brand_new_attendance.db").resolve())
- 
+
+
 def migrate_existing_database():
+    """Non-destructive SQLite migration for existing attendance data.
+
+    Existing schedules are intentionally NOT assigned to faculty automatically.
+    They remain visible to admins until an admin assigns them. This prevents
+    accidental cross-faculty disclosure during migration.
+    """
     db.create_all()
     con = sqlite3.connect(get_db_path())
+    con.execute("PRAGMA foreign_keys=ON")
     try:
-        tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        tables = {
+            r[0] for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+
+        # Existing installations may have older table names/columns.
         migrations = {
             "student": [
                 ("major", "VARCHAR(100)"),
@@ -278,21 +593,159 @@ def migrate_existing_database():
                 ("course", "VARCHAR(100)"),
                 ("year_level", "VARCHAR(50)"),
                 ("major", "VARCHAR(100)"),
-                ("section", "VARCHAR(50)")
-            ]
+                ("section", "VARCHAR(50)"),
+                ("faculty_id", "INTEGER"),
+                ("schedule_id", "INTEGER"),
+            ],
+            "assessment_configs": [
+                ("faculty_id", "INTEGER"),
+                ("schedule_id", "INTEGER"),
+            ],
         }
+
         for table, cols in migrations.items():
             if table not in tables:
                 continue
-            existing = {r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()}
+            existing = {
+                r[1] for r in con.execute(f"PRAGMA table_info({table})").fetchall()
+            }
             for col, typ in cols:
                 if col not in existing:
                     con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+        # Create the assignment table explicitly for older SQLite databases.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS faculty_schedules (
+                id INTEGER PRIMARY KEY,
+                faculty_id INTEGER NOT NULL,
+                schedule_id INTEGER NOT NULL,
+                assigned_at DATETIME NOT NULL,
+                CONSTRAINT unique_faculty_schedule UNIQUE (faculty_id, schedule_id),
+                FOREIGN KEY (faculty_id) REFERENCES user(id) ON DELETE CASCADE,
+                FOREIGN KEY (schedule_id) REFERENCES attendance_schedules(id) ON DELETE CASCADE
+            )
+        """)
+
+        # Link legacy sessions to a schedule only when there is exactly one
+        # matching schedule. We do not guess when multiple schedules match.
+        if "attendance_session" in tables and "attendance_schedules" in tables:
+            con.execute("""
+                UPDATE attendance_session
+                SET schedule_id = (
+                    SELECT MIN(s.id)
+                    FROM attendance_schedules s
+                    WHERE s.course = attendance_session.course
+                      AND s.year_level = attendance_session.year_level
+                      AND COALESCE(s.major, '') = COALESCE(attendance_session.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(attendance_session.section, '')
+                )
+                WHERE schedule_id IS NULL
+                  AND (
+                    SELECT COUNT(*)
+                    FROM attendance_schedules s
+                    WHERE s.course = attendance_session.course
+                      AND s.year_level = attendance_session.year_level
+                      AND COALESCE(s.major, '') = COALESCE(attendance_session.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(attendance_session.section, '')
+                  ) = 1
+            """)
+
+        if "assessments" in tables and "attendance_schedules" in tables:
+            con.execute("""
+                UPDATE assessments
+                SET schedule_id = (
+                    SELECT MIN(s.id)
+                    FROM attendance_schedules s
+                    WHERE s.course = assessments.course
+                      AND s.year_level = assessments.year_level
+                      AND COALESCE(s.major, '') = COALESCE(assessments.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(assessments.section, '')
+                )
+                WHERE schedule_id IS NULL
+                  AND (
+                    SELECT COUNT(*)
+                    FROM attendance_schedules s
+                    WHERE s.course = assessments.course
+                      AND s.year_level = assessments.year_level
+                      AND COALESCE(s.major, '') = COALESCE(assessments.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(assessments.section, '')
+                  ) = 1
+            """)
+
+        if "assessment_configs" in tables and "attendance_schedules" in tables:
+            con.execute("""
+                UPDATE assessment_configs
+                SET schedule_id = (
+                    SELECT MIN(s.id)
+                    FROM attendance_schedules s
+                    WHERE s.course = assessment_configs.course
+                      AND s.year_level = assessment_configs.year_level
+                      AND COALESCE(s.major, '') = COALESCE(assessment_configs.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(assessment_configs.section, '')
+                )
+                WHERE schedule_id IS NULL
+                  AND (
+                    SELECT COUNT(*)
+                    FROM attendance_schedules s
+                    WHERE s.course = assessment_configs.course
+                      AND s.year_level = assessment_configs.year_level
+                      AND COALESCE(s.major, '') = COALESCE(assessment_configs.major, '')
+                      AND COALESCE(s.section, '') = COALESCE(assessment_configs.section, '')
+                  ) = 1
+            """)
+
+        # Legacy records with no uniquely identifiable schedule remain
+        # admin-only until an administrator creates/assigns the correct class.
         con.commit()
     finally:
         con.close()
     db.session.expire_all()
- 
+
+
+def seed_admin_from_environment():
+    """Optionally bootstrap/promote an admin without exposing an open setup route."""
+    username = os.environ.get("ATTENDANCE_ADMIN_USERNAME", "").strip()
+    password = os.environ.get("ATTENDANCE_ADMIN_PASSWORD", "")
+    if not username or not password:
+        return
+    user = User.query.filter_by(username=username).first()
+    if user:
+        user.role = "admin"
+        db.session.commit()
+        return
+    email = os.environ.get("ATTENDANCE_ADMIN_EMAIL", f"{username}@localhost").strip().lower()
+    if User.query.filter_by(email=email).first():
+        return
+    user = User(username=username, email=email, role="admin")
+    user.set_password(password)
+    db.session.add(user)
+    db.session.commit()
+
+
+def get_class_options(user=None):
+    user = user or current_user()
+    if user and user.role == "admin":
+        return db.session.query(
+            AttendanceSchedule.course, AttendanceSchedule.year_level,
+            AttendanceSchedule.major, AttendanceSchedule.section
+        ).distinct().order_by(
+            AttendanceSchedule.course, AttendanceSchedule.year_level,
+            AttendanceSchedule.major, AttendanceSchedule.section
+        ).all()
+    return db.session.query(
+        AttendanceSchedule.course, AttendanceSchedule.year_level,
+        AttendanceSchedule.major, AttendanceSchedule.section
+    ).join(
+        FacultySchedule, FacultySchedule.schedule_id == AttendanceSchedule.id
+    ).filter(
+        FacultySchedule.faculty_id == user.id,
+        AttendanceSchedule.active == True
+    ).distinct().order_by(
+        AttendanceSchedule.course, AttendanceSchedule.year_level,
+        AttendanceSchedule.major, AttendanceSchedule.section
+    ).all()
+
+
 BASE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -334,7 +787,9 @@ table{width:100%;border-collapse:separate;border-spacing:0;font-size:13px}th,td{
 {% if session.user_id %}
 <header class="topbar"><div class="brand">Attendance Checker</div><button class="menu" onclick="toggleMenu()">☰</button>
 <nav id="nav">
-<a href="{{ url_for('dashboard') }}">Dashboard</a><a href="{{ url_for('scanner') }}">Scanner</a><a href="{{ url_for('students') }}">Students</a><a href="{{ url_for('attendance') }}">Attendance</a><a href="{{ url_for('schedules') }}">Schedules</a><a href="{{ url_for('sessions') }}">Sessions</a><a href="{{ url_for('assessments') }}">Assessments</a><a href="{{ url_for('logout') }}">Logout</a>
+<a href="{{ url_for('dashboard') }}">Dashboard</a><a href="{{ url_for('scanner') }}">Scanner</a><a href="{{ url_for('students') }}">Students</a><a href="{{ url_for('attendance') }}">Attendance</a><a href="{{ url_for('schedules') }}">Schedules</a><a href="{{ url_for('sessions') }}">Sessions</a><a href="{{ url_for('assessments') }}">Assessments</a>
+{% if session.get('role') == 'admin' %}<a href="{{ url_for('admin_users') }}">Faculty Access</a>{% endif %}
+<a href="{{ url_for('logout') }}">Logout</a>
 </nav></header>
 {% endif %}
 <div class="container">{% with messages=get_flashed_messages(with_categories=true) %}{% for category,message in messages %}<div class="alert {{ category }}">{{ message }}</div>{% endfor %}{% endwith %}{{ content|safe }}</div>
@@ -404,336 +859,1093 @@ def logout():
 @app.route("/dashboard")
 @login_required
 def dashboard():
+    user = current_user()
     course = request.args.get("course", "").strip()
     year_level = request.args.get("year_level", "").strip()
-    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
-    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
-    q = Student.query.filter_by(active=True)
-    if course: q = q.filter(Student.course == course)
-    if year_level: q = q.filter(Student.year_level == year_level)
+
+    student_base = accessible_students_query(user, active_only=True)
+    courses = [
+        x[0] for x in student_base.with_entities(Student.course).distinct()
+        .order_by(Student.course).all() if x[0]
+    ]
+    years = [
+        x[0] for x in student_base.with_entities(Student.year_level).distinct()
+        .order_by(Student.year_level).all() if x[0]
+    ]
+
+    q = accessible_students_query(user, active_only=True)
+    if course:
+        q = q.filter(Student.course == course)
+    if year_level:
+        q = q.filter(Student.year_level == year_level)
     total = q.count()
-    active = get_active_session()
+
+    active = get_active_session(user)
     present = late = absent = 0
     if active:
-        session_matches = (not course or active.course == course) and (not year_level or active.year_level == year_level)
+        session_matches = (
+            (not course or active.course == course)
+            and (not year_level or active.year_level == year_level)
+        )
         if session_matches:
-            roster = q.filter(Student.id.in_([s.id for s in class_students(active.course or "", active.year_level or "", active.major or "", active.section or "")])).all()
+            roster = class_students(
+                active.course or "", active.year_level or "",
+                active.major or "", active.section or "", user
+            )
             roster_ids = [s.id for s in roster]
-            present = Attendance.query.filter(Attendance.session_id == active.id, Attendance.status == "PRESENT", Attendance.student_id.in_(roster_ids)).count() if roster_ids else 0
-            late = Attendance.query.filter(Attendance.session_id == active.id, Attendance.status == "LATE", Attendance.student_id.in_(roster_ids)).count() if roster_ids else 0
+            if roster_ids:
+                present = Attendance.query.filter(
+                    Attendance.session_id == active.id,
+                    Attendance.status == "PRESENT",
+                    Attendance.student_id.in_(roster_ids)
+                ).count()
+                late = Attendance.query.filter(
+                    Attendance.session_id == active.id,
+                    Attendance.status == "LATE",
+                    Attendance.student_id.in_(roster_ids)
+                ).count()
             absent = max(len(roster_ids) - present - late, 0)
+
     recent_q = Attendance.query.join(Student).join(AttendanceSession)
-    if course: recent_q = recent_q.filter(Student.course == course)
-    if year_level: recent_q = recent_q.filter(Student.year_level == year_level)
+    if user.role != "admin":
+        recent_q = recent_q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == AttendanceSession.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    if course:
+        recent_q = recent_q.filter(Student.course == course)
+    if year_level:
+        recent_q = recent_q.filter(Student.year_level == year_level)
     recent = recent_q.order_by(Attendance.scan_time.desc()).limit(10).all()
-    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
-    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
-    banner = f"""<div class="session-banner"><strong>Active Class: {active.name}</strong><span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>{active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>""" if active else '<div class="alert warning">No class is currently active. Scheduled classes are created automatically on their scheduled days.</div>'
-    rows = "".join(f"<tr><td>{a.student.student_id}</td><td>{a.student.full_name}</td><td>{a.attendance_session.name}</td><td>{a.scan_time.strftime('%I:%M %p')}</td><td><span class='badge {a.status.lower()}'>{a.status}</span></td></tr>" for a in recent) or "<tr><td colspan='5' class='empty'>No scans yet.</td></tr>"
-    content = f"""<div class="page-header"><div><h1>Dashboard</h1><p class="muted">Welcome, {session.get('username')}</p></div><a href="{url_for('scanner')}" class="btn primary">Open Scanner</a></div>{banner}
-    <div class="card"><form method="GET" class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div><div style="align-self:end"><button class="btn primary">Apply Filters</button> <a class="btn secondary" href="{url_for('dashboard')}">Reset</a></div></form></div>
-    <div class="stats"><div class="stat"><span>Total Active Students</span><strong>{total}</strong></div><div class="stat"><span>Present</span><strong class="present">{present}</strong></div><div class="stat"><span>Late</span><strong class="late">{late}</strong></div><div class="stat"><span>Absent</span><strong class="absent">{absent}</strong></div></div>
-    <div class="card"><h2>Recent Scans</h2><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Class</th><th>Time</th><th>Status</th></tr>{rows}</table></div></div>"""
+
+    options_course = '<option value="">All Courses</option>' + "".join(
+        f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>'
+        for c in courses
+    )
+    options_year = '<option value="">All Year Levels</option>' + "".join(
+        f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>'
+        for y in years
+    )
+
+    banner = (
+        f"""<div class="session-banner"><strong>Active Class: {active.name}</strong>
+        <span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>
+        {active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>"""
+        if active else
+        '<div class="alert warning">No class is currently active. Scheduled classes are created automatically on their scheduled days.</div>'
+    )
+    rows = "".join(
+        f"<tr><td>{a.student.student_id}</td><td>{a.student.full_name}</td>"
+        f"<td>{a.attendance_session.name}</td>"
+        f"<td>{a.scan_time.strftime('%I:%M %p')}</td>"
+        f"<td><span class='badge {a.status.lower()}'>{a.status}</span></td></tr>"
+        for a in recent
+    ) or "<tr><td colspan='5' class='empty'>No scans yet.</td></tr>"
+
+    content = f"""<div class="page-header"><div><h1>Dashboard</h1><p class="muted">Welcome,
+    {session.get('username')} ({user.role.title()})</p></div><a href="{url_for('scanner')}"
+    class="btn primary">Open Scanner</a></div>{banner}
+    <div class="card"><form method="GET" class="class-filter"><div><label>Course</label>
+    <select name="course">{options_course}</select></div><div><label>Year Level</label>
+    <select name="year_level">{options_year}</select></div><div style="align-self:end">
+    <button class="btn primary">Apply Filters</button> <a class="btn secondary"
+    href="{url_for('dashboard')}">Reset</a></div></form></div>
+    <div class="stats"><div class="stat"><span>Total Active Students</span><strong>{total}</strong></div>
+    <div class="stat"><span>Present</span><strong class="present">{present}</strong></div>
+    <div class="stat"><span>Late</span><strong class="late">{late}</strong></div>
+    <div class="stat"><span>Absent</span><strong class="absent">{absent}</strong></div></div>
+    <div class="card"><h2>Recent Scans</h2><div class="table-container"><table>
+    <tr><th>ID</th><th>Name</th><th>Class</th><th>Time</th><th>Status</th></tr>{rows}</table></div></div>"""
     return render_page(content, "Dashboard")
- 
- 
+
 @app.route("/students")
 @login_required
 def students():
+    user = current_user()
     search = request.args.get("search", "").strip()
     course = request.args.get("course", "").strip()
     year_level = request.args.get("year_level", "").strip()
-    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
-    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
-    q = Student.query
-    if search: q = q.filter((Student.student_id.ilike(f"%{search}%")) | (Student.full_name.ilike(f"%{search}%")))
-    if course: q = q.filter(Student.course == course)
-    if year_level: q = q.filter(Student.year_level == year_level)
+
+    base = accessible_students_query(user)
+    courses = [x[0] for x in base.with_entities(Student.course).distinct().order_by(Student.course).all() if x[0]]
+    years = [x[0] for x in base.with_entities(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
+
+    q = accessible_students_query(user)
+    if search:
+        q = q.filter(
+            or_(Student.student_id.ilike(f"%{search}%"), Student.full_name.ilike(f"%{search}%"))
+        )
+    if course:
+        q = q.filter(Student.course == course)
+    if year_level:
+        q = q.filter(Student.year_level == year_level)
     items = q.order_by(Student.full_name).all()
-    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
-    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
-    rows = "".join(f"""<tr><td>{s.student_id}</td><td>{s.full_name}</td><td>{s.course}</td><td>{s.year_level}</td><td>{s.major or ""}</td><td>{s.section or ""}</td><td><span class="badge {'active' if s.active else 'inactive'}">{'ACTIVE' if s.active else 'INACTIVE'}</span></td><td><a href="{url_for('student_profile',id=s.id)}" class="btn small primary">QR</a> <a href="{url_for('edit_student',id=s.id)}" class="btn small secondary">Edit</a></td></tr>""" for s in items) or "<tr><td colspan='8' class='empty'>No students found.</td></tr>"
-    content = f"""<div class="page-header"><h1>Students</h1><a href="{url_for('add_student')}" class="btn primary">+ Add Student</a></div>
-    <div class="card"><form method="GET"><input name="search" value="{search}" placeholder="Search Student ID or Name"><div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div></div><button class="btn primary">Apply Filters / Search</button> <a class="btn secondary" href="{url_for('students')}">Reset</a></form></div>
-    <div class="card"><div class="table-container"><table><tr><th>ID</th><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
+
+    options_course = '<option value="">All Courses</option>' + ''.join(
+        f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses
+    )
+    options_year = '<option value="">All Year Levels</option>' + ''.join(
+        f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years
+    )
+    rows = "".join(
+        f"""<tr><td>{s.student_id}</td><td>{s.full_name}</td><td>{s.course}</td>
+        <td>{s.year_level}</td><td>{s.major or ""}</td><td>{s.section or ""}</td>
+        <td><span class="badge {'active' if s.active else 'inactive'}">
+        {'ACTIVE' if s.active else 'INACTIVE'}</span></td><td>
+        <a href="{url_for('student_profile',id=s.id)}" class="btn small primary">QR</a>
+        <a href="{url_for('edit_student',id=s.id)}" class="btn small secondary">Edit</a>
+        </td></tr>"""
+        for s in items
+    ) or "<tr><td colspan='8' class='empty'>No students found.</td></tr>"
+
+    content = f"""<div class="page-header"><h1>Students</h1><a href="{url_for('add_student')}"
+    class="btn primary">+ Add Student</a></div><div class="card"><form method="GET">
+    <input name="search" value="{search}" placeholder="Search Student ID or Name">
+    <div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div>
+    <div><label>Year Level</label><select name="year_level">{options_year}</select></div></div>
+    <button class="btn primary">Apply Filters / Search</button> <a class="btn secondary"
+    href="{url_for('students')}">Reset</a></form></div><div class="card"><div class="table-container">
+    <table><tr><th>ID</th><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th>
+    <th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
     return render_page(content, "Students")
- 
- 
+
+
 @app.route("/students/add",methods=["GET","POST"])
 @login_required
 def add_student():
-    if request.method=="POST":
-        sid=request.form.get("student_id","").strip(); name=request.form.get("full_name","").strip(); course=request.form.get("course","").strip(); year=request.form.get("year_level","").strip(); major=request.form.get("major","").strip(); section=request.form.get("section","").strip()
-        if not all([sid,name,course,year]): flash("Student ID, name, course, and year level are required.","danger"); return redirect(url_for("add_student"))
-        if Student.query.filter_by(student_id=sid).first(): flash("Student ID exists.","danger"); return redirect(url_for("add_student"))
-        s=Student(student_id=sid,full_name=name,course=course,year_level=year,major=major or None,section=section or None,active=request.form.get('active','1')=='1'); db.session.add(s); db.session.commit(); generate_student_qr(sid)
-        flash("Student added and QR generated.","success"); return redirect(url_for("student_profile",id=s.id))
-    content="""<div class="page-header"><h1>Add Student</h1></div><div class="card form-card"><form method="POST"><div class="grid2"><div><label>Student ID</label><input name="student_id" required></div><div><label>Full Name</label><input name="full_name" required></div><div><label>Course / Program</label><input name="course" placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level" placeholder="2nd Year" required></div><div><label>Major</label><input name="major" placeholder="Computer Technology"></div><div><label>Section</label><input name="section" placeholder="A"></div></div><label>Status</label><select name="active"><option value="1">Active</option><option value="0">Inactive</option></select><div class="form-actions"><a href="{{ url_for('students') }}" class="btn secondary">Cancel</a><button class="btn primary">Add Student</button></div></form></div>"""
+    user = current_user()
+    if request.method == "POST":
+        sid = request.form.get("student_id","").strip()
+        name = request.form.get("full_name","").strip()
+        course = request.form.get("course","").strip()
+        year = request.form.get("year_level","").strip()
+        major = request.form.get("major","").strip()
+        section = request.form.get("section","").strip()
+
+        if not all([sid,name,course,year]):
+            flash("Student ID, name, course, and year level are required.","danger")
+            return redirect(url_for("add_student"))
+        if Student.query.filter_by(student_id=sid).first():
+            flash("Student ID exists.","danger")
+            return redirect(url_for("add_student"))
+        if user.role != "admin" and not faculty_can_access_class(course, year, major, section, user):
+            flash("You can only add students to a class assigned to you.","danger")
+            return redirect(url_for("students"))
+
+        s = Student(
+            student_id=sid, full_name=name, course=course, year_level=year,
+            major=major or None, section=section or None,
+            active=request.form.get('active','1') == '1'
+        )
+        db.session.add(s)
+        db.session.commit()
+        generate_student_qr(sid)
+        flash("Student added and QR generated.","success")
+        return redirect(url_for("student_profile",id=s.id))
+
+    content="""<div class="page-header"><h1>Add Student</h1></div><div class="card form-card">
+    <form method="POST"><div class="grid2"><div><label>Student ID</label><input name="student_id" required>
+    </div><div><label>Full Name</label><input name="full_name" required></div><div><label>Course / Program</label>
+    <input name="course" placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level"
+    placeholder="2nd Year" required></div><div><label>Major</label><input name="major"
+    placeholder="Computer Technology"></div><div><label>Section</label><input name="section"
+    placeholder="A"></div></div><label>Status</label><select name="active"><option value="1">Active</option>
+    <option value="0">Inactive</option></select><div class="form-actions"><a href="{{ url_for('students') }}"
+    class="btn secondary">Cancel</a><button class="btn primary">Add Student</button></div></form></div>"""
     return render_page(content,"Add Student")
- 
+
+
 @app.route("/students/profile/<int:id>")
 @login_required
 def student_profile(id):
-    s=Student.query.get_or_404(id)
-    if not qr_path(s.student_id).exists(): generate_student_qr(s.student_id)
-    content=f"""<div class="page-header"><h1>{s.full_name}</h1><a href="{url_for('students')}" class="btn secondary">Back</a></div><div class="student-profile"><div class="card"><p><strong>ID:</strong> {s.student_id}</p><p><strong>Course:</strong> {s.course}</p><p><strong>Year:</strong> {s.year_level}</p><p><strong>Major:</strong> {s.major or 'Not set'}</p><p><strong>Section:</strong> {s.section or 'Not set'}</p><p><strong>Status:</strong> {'ACTIVE' if s.active else 'INACTIVE'}</p></div><div class="card qr-card"><h3>QR Code</h3><img src="{url_for('student_qr',student_id=s.student_id)}"><p class="muted">ID: {s.student_id}</p><a class="btn primary" href="{url_for('student_qr',student_id=s.student_id)}" download>Download</a></div></div>"""
+    user = current_user()
+    s = db.session.get(Student, id)
+    if not s:
+        return "Student not found", 404
+    if not faculty_can_access_student(s, user):
+        return "Forbidden", 403
+    if not qr_path(s.student_id).exists():
+        generate_student_qr(s.student_id)
+    content=f"""<div class="page-header"><h1>{s.full_name}</h1><a href="{url_for('students')}"
+    class="btn secondary">Back</a></div><div class="student-profile"><div class="card">
+    <p><strong>ID:</strong> {s.student_id}</p><p><strong>Course:</strong> {s.course}</p>
+    <p><strong>Year:</strong> {s.year_level}</p><p><strong>Major:</strong> {s.major or 'Not set'}</p>
+    <p><strong>Section:</strong> {s.section or 'Not set'}</p><p><strong>Status:</strong>
+    {'ACTIVE' if s.active else 'INACTIVE'}</p></div><div class="card qr-card"><h3>QR Code</h3>
+    <img src="{url_for('student_qr',student_id=s.student_id)}"><p class="muted">ID: {s.student_id}</p>
+    <a class="btn primary" href="{url_for('student_qr',student_id=s.student_id)}" download>Download</a>
+    </div></div>"""
     return render_page(content,"Profile")
- 
+
+
 @app.route("/qr_codes/<path:student_id>.png")
 @login_required
 def student_qr(student_id):
+    user = current_user()
+    s = Student.query.filter_by(student_id=student_id).first()
+    if not s or not faculty_can_access_student(s, user):
+        return "Forbidden", 403
+    path = qr_path(student_id)
+    if not path.exists():
+        generate_student_qr(student_id)
     return send_from_directory(QR_FOLDER,f"{student_id}.png")
- 
+
+
 @app.route("/students/edit/<int:id>",methods=["GET","POST"])
 @login_required
 def edit_student(id):
-    s=Student.query.get_or_404(id)
+    user = current_user()
+    s = db.session.get(Student, id)
+    if not s:
+        return "Student not found", 404
+    if not faculty_can_access_student(s, user):
+        return "Forbidden", 403
+
     if request.method=="POST":
-        old=s.student_id; new=request.form.get("student_id","").strip()
-        if not new: flash("Student ID is required.","danger"); return redirect(url_for("edit_student",id=id))
+        old=s.student_id
+        new=request.form.get("student_id","").strip()
+        course=request.form.get("course","").strip()
+        year=request.form.get("year_level","").strip()
+        major=request.form.get("major","").strip()
+        section=request.form.get("section","").strip()
+
+        if not new:
+            flash("Student ID is required.","danger")
+            return redirect(url_for("edit_student",id=id))
         duplicate=Student.query.filter(Student.student_id==new,Student.id!=s.id).first()
-        if duplicate: flash("Student ID already exists.","danger"); return redirect(url_for("edit_student",id=id))
-        s.student_id=new; s.full_name=request.form.get("full_name","").strip(); s.course=request.form.get("course","").strip(); s.year_level=request.form.get("year_level","").strip(); s.major=request.form.get("major","").strip() or None; s.section=request.form.get("section","").strip() or None; s.active=request.form.get("active")=="1"
+        if duplicate:
+            flash("Student ID already exists.","danger")
+            return redirect(url_for("edit_student",id=id))
+        if not all([course, year]):
+            flash("Course and year level are required.","danger")
+            return redirect(url_for("edit_student",id=id))
+        if user.role != "admin" and not faculty_can_access_class(course, year, major, section, user):
+            flash("You cannot move a student into a class that is not assigned to you.","danger")
+            return redirect(url_for("edit_student",id=id))
+
+        s.student_id=new
+        s.full_name=request.form.get("full_name","").strip()
+        s.course=course
+        s.year_level=year
+        s.major=major or None
+        s.section=section or None
+        s.active=request.form.get("active")=="1"
         db.session.commit()
-        if old!=new: delete_student_qr(old)
-        generate_student_qr(new); flash("Student updated.","success"); return redirect(url_for("students"))
-    content=f"""<div class="page-header"><h1>Edit Student</h1></div><div class="card form-card"><form method="POST"><label>Student ID</label><input name="student_id" value="{s.student_id}" required><label>Full Name</label><input name="full_name" value="{s.full_name}" required><div class="grid2"><div><label>Course</label><input name="course" value="{s.course}" required></div><div><label>Year Level</label><input name="year_level" value="{s.year_level}" required></div><div><label>Major</label><input name="major" value="{s.major or ''}"></div><div><label>Section</label><input name="section" value="{s.section or ''}"></div></div><label>Status</label><select name="active"><option value="1" {'selected' if s.active else ''}>Active</option><option value="0" {'selected' if not s.active else ''}>Inactive</option></select><div class="form-actions"><a href="{url_for('students')}" class="btn secondary">Cancel</a><button class="btn primary">Save</button></div></form></div>"""
+        if old!=new:
+            delete_student_qr(old)
+        generate_student_qr(new)
+        flash("Student updated.","success")
+        return redirect(url_for("students"))
+
+    content=f"""<div class="page-header"><h1>Edit Student</h1></div><div class="card form-card">
+    <form method="POST"><label>Student ID</label><input name="student_id" value="{s.student_id}" required>
+    <label>Full Name</label><input name="full_name" value="{s.full_name}" required><div class="grid2">
+    <div><label>Course</label><input name="course" value="{s.course}" required></div><div><label>Year Level</label>
+    <input name="year_level" value="{s.year_level}" required></div><div><label>Major</label><input name="major"
+    value="{s.major or ''}"></div><div><label>Section</label><input name="section" value="{s.section or ''}">
+    </div></div><label>Status</label><select name="active"><option value="1" {'selected' if s.active else ''}>
+    Active</option><option value="0" {'selected' if not s.active else ''}>Inactive</option></select>
+    <div class="form-actions"><a href="{url_for('students')}" class="btn secondary">Cancel</a>
+    <button class="btn primary">Save</button></div></form></div>"""
     return render_page(content,"Edit Student")
- 
+
 @app.route("/schedules")
 @login_required
 def schedules():
-    items=AttendanceSchedule.query.order_by(AttendanceSchedule.active.desc(),AttendanceSchedule.name).all()
+    user = current_user()
     create_today_sessions()
-    rows=""
+    items = schedule_access_query(user).order_by(
+        AttendanceSchedule.active.desc(), AttendanceSchedule.name
+    ).all()
+    faculty = User.query.filter_by(role="faculty").order_by(User.username).all()
+
+    rows = ""
     for s in items:
-        buttons=f"""<a class="btn small secondary" href="{url_for('edit_schedule',id=s.id)}">Edit</a> <form method="POST" action="{url_for('toggle_schedule',id=s.id)}" style="display:inline"><button class="btn small {'danger' if s.active else 'primary'}">{'Deactivate' if s.active else 'Activate'}</button></form> <form method="POST" action="{url_for('delete_schedule',id=s.id)}" style="display:inline" onsubmit="return confirm('Delete this schedule? Existing attendance sessions will be preserved.')"><button class="btn small danger">Delete</button></form>"""
-        rows+=f"<tr><td>{s.name}</td><td>{s.course}</td><td>{s.year_level}</td><td>{s.major or ''}</td><td>{s.section or ''}</td><td>{s.days}</td><td>{s.start_time.strftime('%I:%M %p')}</td><td>{s.late_time.strftime('%I:%M %p')}</td><td>{s.end_time.strftime('%I:%M %p')}</td><td><span class='badge {'active' if s.active else 'inactive'}'>{'ACTIVE' if s.active else 'INACTIVE'}</span></td><td>{buttons}</td></tr>"
-    content=f"""<div class="page-header"><div><h1>Class Schedules</h1><p class="muted">Create a class once. Attendance sessions are automatically generated on the selected days.</p></div><a href="{url_for('add_schedule')}" class="btn primary">+ Add Schedule</a></div><div class="card"><div class="table-container"><table><tr><th>Name</th><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Days</th><th>Start</th><th>Late</th><th>End</th><th>Status</th><th>Action</th></tr>{rows or "<tr><td colspan='11' class='empty'>No schedules yet.</td></tr>"}</table></div></div>"""
+        assigned = [a.faculty.username for a in s.faculty_assignments]
+        if user.role == "admin":
+            assignment_form = f"""
+            <form method="POST" action="{url_for('assign_schedule', id=s.id)}"
+                  style="display:flex;gap:6px;flex-wrap:wrap;margin-top:7px">
+              <select name="faculty_id" style="margin:0;min-width:150px">
+                <option value="">Assign faculty...</option>
+                {''.join(
+                    f'<option value="{f.id}">{f.username}</option>'
+                    for f in faculty
+                )}
+              </select>
+              <button class="btn small primary">Assign</button>
+            </form>
+            <div style="margin-top:6px">
+              {''.join(
+                  f'<form method="POST" action="{url_for("unassign_schedule", id=s.id)}" style="display:inline;margin-right:5px">'
+                  f'<input type="hidden" name="faculty_id" value="{a.faculty_id}">'
+                  f'<button class="btn small danger" type="submit">Remove {a.faculty.username}</button></form>'
+                  for a in s.faculty_assignments
+              )}
+            </div>
+            """
+        else:
+            assignment_form = ""
+        assigned_text = ", ".join(assigned) if assigned else "Admin only / unassigned"
+        buttons = f"""<a class="btn small secondary" href="{url_for('edit_schedule',id=s.id)}">Edit</a>
+        <form method="POST" action="{url_for('toggle_schedule',id=s.id)}" style="display:inline">
+        <button class="btn small {'danger' if s.active else 'primary'}">
+        {'Deactivate' if s.active else 'Activate'}</button></form>
+        <form method="POST" action="{url_for('delete_schedule',id=s.id)}" style="display:inline"
+        onsubmit="return confirm('Delete this schedule? Existing attendance sessions will be preserved.')">
+        <button class="btn small danger">Delete</button></form>{assignment_form}"""
+        rows += f"""<tr><td>{s.name}</td><td>{s.course}</td><td>{s.year_level}</td>
+        <td>{s.major or ''}</td><td>{s.section or ''}</td><td>{s.days}</td>
+        <td>{s.start_time.strftime('%I:%M %p')}</td><td>{s.late_time.strftime('%I:%M %p')}</td>
+        <td>{s.end_time.strftime('%I:%M %p')}</td><td><span class='badge
+        {'active' if s.active else 'inactive'}'>{'ACTIVE' if s.active else 'INACTIVE'}</span></td>
+        <td><strong>{assigned_text}</strong><br>{buttons}</td></tr>"""
+
+    extra_head = "<th>Assigned Faculty / Actions</th>"
+    content=f"""<div class="page-header"><div><h1>Class Schedules</h1><p class="muted">
+    Create a class once. Attendance sessions are automatically generated on selected days.
+    {'Admins can assign each schedule to one or more faculty accounts.' if user.role == 'admin' else 'Only classes assigned to your account are shown.'}
+    </p></div><a href="{url_for('add_schedule')}" class="btn primary">+ Add Schedule</a></div>
+    <div class="card"><div class="table-container"><table><tr><th>Name</th><th>Course</th><th>Year</th>
+    <th>Major</th><th>Section</th><th>Days</th><th>Start</th><th>Late</th><th>End</th><th>Status</th>
+    {extra_head}</tr>{rows or "<tr><td colspan='11' class='empty'>No schedules yet.</td></tr>"}</table></div></div>"""
     return render_page(content,"Schedules")
- 
+
+
 def schedule_form_content(s=None):
     editing=s is not None
-    vals={"name":s.name if s else "","course":s.course if s else "","year":s.year_level if s else "","major":s.major if s else "","section":s.section if s else "","start":s.start_time.strftime("%H:%M") if s else "08:00","late":s.late_time.strftime("%H:%M") if s else "08:15","end":s.end_time.strftime("%H:%M") if s else "10:00"}
+    vals={"name":s.name if s else "","course":s.course if s else "","year":s.year_level if s else "",
+          "major":s.major if s else "","section":s.section if s else "",
+          "start":s.start_time.strftime("%H:%M") if s else "08:00",
+          "late":s.late_time.strftime("%H:%M") if s else "08:15",
+          "end":s.end_time.strftime("%H:%M") if s else "10:00"}
     chosen=selected_days(s.days) if s else []
-    checks="".join(f"<label><input type='checkbox' name='days' value='{d}' {'checked' if d in chosen else ''}>{d}</label>" for d in DAY_NAMES)
+    checks="".join(
+        f"<label><input type='checkbox' name='days' value='{d}' {'checked' if d in chosen else ''}>{d}</label>"
+        for d in DAY_NAMES
+    )
     action=url_for("edit_schedule",id=s.id) if editing else url_for("add_schedule")
-    return f"""<div class="page-header"><h1>{'Edit' if editing else 'Add'} Class Schedule</h1></div><div class="card form-card"><div class="help">Set the recurring class here once. The system will automatically create/use the attendance session on every selected weekday.</div><form method="POST"><label>Schedule Name</label><input name="name" value="{vals['name']}" placeholder="Computer Programming" required><div class="grid2"><div><label>Course / Program</label><input name="course" value="{vals['course']}" placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level" value="{vals['year']}" placeholder="2nd Year" required></div><div><label>Major</label><input name="major" value="{vals['major']}" placeholder="Computer Technology"></div><div><label>Section (Optional)</label><input name="section" value="{vals['section']}" placeholder="A"></div></div><label>Days</label><div class="check-grid">{checks}</div><div class="grid3"><div><label>Start Time</label><input type="time" name="start_time" value="{vals['start']}" required></div><div><label>Late After</label><input type="time" name="late_time" value="{vals['late']}" required></div><div><label>End Time</label><input type="time" name="end_time" value="{vals['end']}" required></div></div><div class="form-actions"><a href="{url_for('schedules')}" class="btn secondary">Cancel</a><button class="btn primary">Save Schedule</button></div></form></div>"""
- 
+    return f"""<div class="page-header"><h1>{'Edit' if editing else 'Add'} Class Schedule</h1></div>
+    <div class="card form-card"><div class="help">Set the recurring class here once. The system will
+    automatically create/use the attendance session on every selected weekday.</div><form method="POST">
+    <label>Schedule Name</label><input name="name" value="{vals['name']}" placeholder="Computer Programming" required>
+    <div class="grid2"><div><label>Course / Program</label><input name="course" value="{vals['course']}"
+    placeholder="BSIT" required></div><div><label>Year Level</label><input name="year_level" value="{vals['year']}"
+    placeholder="2nd Year" required></div><div><label>Major</label><input name="major" value="{vals['major']}"
+    placeholder="Computer Technology"></div><div><label>Section (Optional)</label><input name="section"
+    value="{vals['section']}" placeholder="A"></div></div><label>Days</label><div class="check-grid">{checks}</div>
+    <div class="grid3"><div><label>Start Time</label><input type="time" name="start_time" value="{vals['start']}" required>
+    </div><div><label>Late After</label><input type="time" name="late_time" value="{vals['late']}" required></div>
+    <div><label>End Time</label><input type="time" name="end_time" value="{vals['end']}" required></div></div>
+    <div class="form-actions"><a href="{url_for('schedules')}" class="btn secondary">Cancel</a>
+    <button class="btn primary">Save Schedule</button></div></form></div>"""
+
+
 @app.route("/schedules/add",methods=["GET","POST"])
 @login_required
 def add_schedule():
+    user = current_user()
     if request.method=="POST":
         days=request.form.getlist("days")
-        if not days: flash("Select at least one day.","danger"); return redirect(url_for("add_schedule"))
-        try: st=parse_time(request.form.get("start_time")); lt=parse_time(request.form.get("late_time")); et=parse_time(request.form.get("end_time"))
-        except: flash("Invalid time.","danger"); return redirect(url_for("add_schedule"))
-        if not(st<=lt<=et): flash("Start ≤ Late ≤ End.","danger"); return redirect(url_for("add_schedule"))
-        s=AttendanceSchedule(name=request.form.get("name","").strip(),course=request.form.get("course","").strip(),year_level=request.form.get("year_level","").strip(),major=request.form.get("major","").strip() or None,section=request.form.get("section","").strip() or None,days=",".join(days),start_time=st,late_time=lt,end_time=et,active=True)
-        if not s.name or not s.course or not s.year_level: flash("Schedule name, course, and year level are required.","danger"); return redirect(url_for("add_schedule"))
-        db.session.add(s); db.session.commit(); create_today_sessions(); flash("Recurring schedule created.","success"); return redirect(url_for("schedules"))
+        if not days:
+            flash("Select at least one day.","danger")
+            return redirect(url_for("add_schedule"))
+        try:
+            st=parse_time(request.form.get("start_time"))
+            lt=parse_time(request.form.get("late_time"))
+            et=parse_time(request.form.get("end_time"))
+        except:
+            flash("Invalid time.","danger")
+            return redirect(url_for("add_schedule"))
+        if not(st<=lt<=et):
+            flash("Start Late End.","danger")
+            return redirect(url_for("add_schedule"))
+
+        name=request.form.get("name","").strip()
+        course=request.form.get("course","").strip()
+        year=request.form.get("year_level","").strip()
+        major=request.form.get("major","").strip() or None
+        section=request.form.get("section","").strip() or None
+        if not name or not course or not year:
+            flash("Schedule name, course, and year level are required.","danger")
+            return redirect(url_for("add_schedule"))
+
+        s=AttendanceSchedule(
+            name=name,course=course,year_level=year,major=major,section=section,
+            days=",".join(days),start_time=st,late_time=lt,end_time=et,active=True
+        )
+        db.session.add(s)
+        db.session.flush()
+
+        # A faculty member who creates a schedule automatically owns that class.
+        # Admin-created schedules remain unassigned until explicitly assigned.
+        if user.role == "faculty":
+            db.session.add(FacultySchedule(faculty_id=user.id, schedule_id=s.id))
+
+        db.session.commit()
+        create_today_sessions()
+        flash("Recurring schedule created and access assignment saved.","success")
+        return redirect(url_for("schedules"))
     return render_page(schedule_form_content(),"Add Schedule")
- 
+
+
 @app.route("/schedules/edit/<int:id>",methods=["GET","POST"])
 @login_required
 def edit_schedule(id):
-    s=AttendanceSchedule.query.get_or_404(id)
+    user = current_user()
+    s, err = get_schedule_or_forbidden(id, user)
+    if err:
+        if request.method == "GET":
+            return "Forbidden", 403
+        return err
+
     if request.method=="POST":
         days=request.form.getlist("days")
-        try: st=parse_time(request.form.get("start_time")); lt=parse_time(request.form.get("late_time")); et=parse_time(request.form.get("end_time"))
-        except: flash("Invalid time.","danger"); return redirect(url_for("edit_schedule",id=id))
-        if not days: flash("Select at least one day.","danger"); return redirect(url_for("edit_schedule",id=id))
-        if not(st<=lt<=et): flash("Start ≤ Late ≤ End.","danger"); return redirect(url_for("edit_schedule",id=id))
-        s.name=request.form.get("name","").strip(); s.course=request.form.get("course","").strip(); s.year_level=request.form.get("year_level","").strip(); s.major=request.form.get("major","").strip() or None; s.section=request.form.get("section","").strip() or None; s.days=",".join(days); s.start_time=st; s.late_time=lt; s.end_time=et
-        db.session.commit(); flash("Schedule updated. Existing attendance sessions are preserved.","success"); return redirect(url_for("schedules"))
+        try:
+            st=parse_time(request.form.get("start_time"))
+            lt=parse_time(request.form.get("late_time"))
+            et=parse_time(request.form.get("end_time"))
+        except:
+            flash("Invalid time.","danger")
+            return redirect(url_for("edit_schedule",id=id))
+        if not days:
+            flash("Select at least one day.","danger")
+            return redirect(url_for("edit_schedule",id=id))
+        if not(st<=lt<=et):
+            flash("Start Late End.","danger")
+            return redirect(url_for("edit_schedule",id=id))
+
+        new_course=request.form.get("course","").strip()
+        new_year=request.form.get("year_level","").strip()
+        new_major=request.form.get("major","").strip() or None
+        new_section=request.form.get("section","").strip() or None
+        if not new_course or not new_year or not request.form.get("name","").strip():
+            flash("Schedule name, course, and year level are required.","danger")
+            return redirect(url_for("edit_schedule",id=id))
+
+        # Faculty cannot edit a schedule into a cohort they do not own.
+        if user.role != "admin":
+            own = faculty_can_access_class(new_course,new_year,new_major or "",new_section or "",user)
+            if not own:
+                flash("You cannot move this schedule to an unassigned class.","danger")
+                return redirect(url_for("edit_schedule",id=id))
+
+        s.name=request.form.get("name","").strip()
+        s.course=new_course
+        s.year_level=new_year
+        s.major=new_major
+        s.section=new_section
+        s.days=",".join(days)
+        s.start_time=st
+        s.late_time=lt
+        s.end_time=et
+        db.session.commit()
+        flash("Schedule updated. Existing attendance sessions are preserved.","success")
+        return redirect(url_for("schedules"))
     return render_page(schedule_form_content(s),"Edit Schedule")
- 
+
+
 @app.route("/schedules/toggle/<int:id>",methods=["POST"])
 @login_required
 def toggle_schedule(id):
-    s=AttendanceSchedule.query.get_or_404(id); s.active=not s.active; db.session.commit(); flash(f"Schedule {'activated' if s.active else 'deactivated'}.","success"); return redirect(url_for("schedules"))
- 
+    user=current_user()
+    s, err=get_schedule_or_forbidden(id,user)
+    if err:
+        return err
+    s.active=not s.active
+    db.session.commit()
+    flash(f"Schedule {'activated' if s.active else 'deactivated'}.","success")
+    return redirect(url_for("schedules"))
+
+
 @app.route("/schedules/delete/<int:id>",methods=["POST"])
 @login_required
 def delete_schedule(id):
-    s=AttendanceSchedule.query.get_or_404(id)
-    db.session.delete(s); db.session.commit(); flash("Schedule deleted. Existing attendance records were preserved.","success"); return redirect(url_for("schedules"))
- 
+    user=current_user()
+    s, err=get_schedule_or_forbidden(id,user)
+    if err:
+        return err
+    db.session.delete(s)
+    db.session.commit()
+    flash("Schedule deleted. Existing attendance records were preserved.","success")
+    return redirect(url_for("schedules"))
+
+
+@app.route("/admin/users")
+@roles_required("admin")
+def admin_users():
+    users=User.query.order_by(User.role.desc(),User.username).all()
+    schedules=AttendanceSchedule.query.order_by(AttendanceSchedule.name).all()
+    rows=""
+    for u in users:
+        role_form=f"""<form method="POST" action="{url_for('set_user_role',id=u.id)}"
+        style="display:flex;gap:6px"><select name="role" style="margin:0">
+        <option value="faculty" {'selected' if u.role=='faculty' else ''}>Faculty</option>
+        <option value="admin" {'selected' if u.role=='admin' else ''}>Admin</option>
+        </select><button class="btn small secondary">Save Role</button></form>"""
+        assigned=", ".join(a.schedule.name for a in u.schedules) or "None"
+        rows += f"""<tr><td>{u.username}</td><td>{u.email}</td><td>{u.role}</td>
+        <td>{assigned}</td><td>{role_form}</td></tr>"""
+    content=f"""<div class="page-header"><div><h1>Faculty & Access Management</h1>
+    <p class="muted">Admins can change account roles and assign classes under Schedules.</p></div>
+    <a class="btn secondary" href="{url_for('schedules')}">Manage Schedules</a></div>
+    <div class="card"><div class="table-container"><table><tr><th>Username</th><th>Email</th>
+    <th>Role</th><th>Assigned Classes</th><th>Change Role</th></tr>{rows}</table></div></div>"""
+    return render_page(content,"Faculty & Access")
+
+
+@app.route("/admin/users/<int:id>/role", methods=["POST"])
+@roles_required("admin")
+def set_user_role(id):
+    user=db.session.get(User,id)
+    if not user:
+        return "User not found",404
+    role=request.form.get("role","").strip()
+    if role not in {"admin","faculty"}:
+        flash("Invalid role.","danger")
+        return redirect(url_for("admin_users"))
+    if user.id == current_user().id and role != "admin":
+        if User.query.filter_by(role="admin").count() <= 1:
+            flash("The last admin account cannot be demoted.","danger")
+            return redirect(url_for("admin_users"))
+    user.role=role
+    db.session.commit()
+    flash("User role updated.","success")
+    return redirect(url_for("admin_users"))
+
+
+@app.route("/admin/schedules/<int:id>/assign", methods=["POST"])
+@roles_required("admin")
+def assign_schedule(id):
+    schedule=db.session.get(AttendanceSchedule,id)
+    faculty_id=request.form.get("faculty_id","").strip()
+    faculty=db.session.get(User,int(faculty_id)) if faculty_id.isdigit() else None
+    if not schedule or not faculty or faculty.role != "faculty":
+        flash("Select a valid faculty account and schedule.","danger")
+        return redirect(url_for("schedules"))
+    existing=FacultySchedule.query.filter_by(
+        faculty_id=faculty.id, schedule_id=schedule.id
+    ).first()
+    if not existing:
+        db.session.add(FacultySchedule(faculty_id=faculty.id,schedule_id=schedule.id))
+        db.session.commit()
+    flash(f"{faculty.username} assigned to {schedule.name}.","success")
+    return redirect(url_for("schedules"))
+
+
+@app.route("/admin/schedules/<int:id>/unassign", methods=["POST"])
+@roles_required("admin")
+def unassign_schedule(id):
+    schedule=db.session.get(AttendanceSchedule,id)
+    faculty_id=request.form.get("faculty_id","").strip()
+    faculty=db.session.get(User,int(faculty_id)) if faculty_id.isdigit() else None
+    if not schedule or not faculty:
+        flash("Invalid schedule or faculty.","danger")
+        return redirect(url_for("schedules"))
+    assignment=FacultySchedule.query.filter_by(
+        faculty_id=faculty.id, schedule_id=schedule.id
+    ).first()
+    if assignment:
+        db.session.delete(assignment)
+        db.session.commit()
+    flash(f"{faculty.username} removed from {schedule.name}.","success")
+    return redirect(url_for("schedules"))
+
 @app.route("/sessions")
 @login_required
 def sessions():
-    create_today_sessions(); close_expired_sessions()
-    items=AttendanceSession.query.order_by(AttendanceSession.session_date.desc(),AttendanceSession.id.desc()).limit(100).all()
-    rows="".join(f"""<tr><td>{x.session_date}</td><td>{x.name}</td><td>{x.course or ''}</td><td>{x.year_level or ''}</td><td>{x.start_time.strftime('%I:%M %p')}</td><td>{x.end_time.strftime('%I:%M %p')}</td><td><span class="badge {'active' if x.status=='OPEN' else 'inactive'}">{x.status}</span></td><td>{('<form method="POST" action="'+url_for('close_session',id=x.id)+'"><button class="btn small danger">Close</button></form>') if x.status=='OPEN' else 'Completed'}</td></tr>""" for x in items) or "<tr><td colspan='8' class='empty'>No sessions.</td></tr>"
-    content=f"""<div class="page-header"><div><h1>Attendance Sessions</h1><p class="muted">Recurring schedules create these automatically.</p></div></div><div class="card"><div class="table-container"><table><tr><th>Date</th><th>Class</th><th>Course</th><th>Year</th><th>Start</th><th>End</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
+    user=current_user()
+    create_today_sessions()
+    close_expired_sessions()
+    q=AttendanceSession.query
+    if user.role != "admin":
+        q=q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == AttendanceSession.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    items=q.order_by(
+        AttendanceSession.session_date.desc(),AttendanceSession.id.desc()
+    ).limit(100).all()
+    rows="".join(
+        f"""<tr><td>{x.session_date}</td><td>{x.name}</td><td>{x.course or ''}</td>
+        <td>{x.year_level or ''}</td><td>{x.start_time.strftime('%I:%M %p')}</td>
+        <td>{x.end_time.strftime('%I:%M %p')}</td><td><span class="badge
+        {'active' if x.status=='OPEN' else 'inactive'}">{x.status}</span></td><td>
+        {('<form method="POST" action="'+url_for('close_session',id=x.id)+'"><button class="btn small danger">Close</button></form>')
+        if x.status=='OPEN' else 'Completed'}</td></tr>"""
+        for x in items
+    ) or "<tr><td colspan='8' class='empty'>No sessions.</td></tr>"
+    content=f"""<div class="page-header"><div><h1>Attendance Sessions</h1><p class="muted">
+    Recurring schedules create these automatically. {'All faculty sessions are shown to admins.' if user.role=='admin'
+    else 'Only sessions for classes assigned to you are shown.'}</p></div></div>
+    <div class="card"><div class="table-container"><table><tr><th>Date</th><th>Class</th><th>Course</th>
+    <th>Year</th><th>Start</th><th>End</th><th>Status</th><th>Action</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Sessions")
- 
+
+
 @app.route("/sessions/create", methods=["POST"])
 @login_required
 def create_session():
     flash("Manual session creation has been replaced by recurring Class Schedules. Create the class once under Schedules.", "info")
     return redirect(url_for("schedules"))
- 
+
+
 @app.route("/sessions/close/<int:id>",methods=["POST"])
 @login_required
 def close_session(id):
-    sess=AttendanceSession.query.get_or_404(id)
-    roster=class_students(sess.course or "",sess.year_level or "",sess.major or "",sess.section or "")
-    scanned={a.student_id for a in sess.attendances}; now=datetime.now()
+    user=current_user()
+    sess=db.session.get(AttendanceSession,id)
+    if not sess:
+        return "Session not found",404
+    if not faculty_can_access_session(sess,user):
+        return "Forbidden",403
+    roster=class_students(
+        sess.course or "",sess.year_level or "",
+        sess.major or "",sess.section or "",user
+    )
+    scanned={a.student_id for a in sess.attendances}
+    now=datetime.now()
     for st in roster:
-        if st.id not in scanned: db.session.add(Attendance(student_id=st.id,session_id=sess.id,scan_time=now,status="ABSENT"))
-    sess.status="CLOSED"; db.session.commit(); flash("Session closed. Unscanned class members marked ABSENT.","success"); return redirect(url_for("sessions"))
- 
+        if st.id not in scanned:
+            db.session.add(Attendance(
+                student_id=st.id,session_id=sess.id,scan_time=now,status="ABSENT"
+            ))
+    sess.status="CLOSED"
+    db.session.commit()
+    flash("Session closed. Unscanned class members marked ABSENT.","success")
+    return redirect(url_for("sessions"))
+
 @app.route("/scan",methods=["POST"])
 @login_required
 def scan():
-    create_today_sessions(); close_expired_sessions()
-    data=request.get_json() or {}; sid=str(data.get("student_id","")).strip()
-    if not sid: return jsonify({"success":False,"message":"No ID provided"})
-    active=get_active_session()
-    if not active: return jsonify({"success":False,"message":"No active scheduled class right now."})
+    user=current_user()
+    create_today_sessions()
+    close_expired_sessions()
+    data=request.get_json(silent=True) or {}
+    sid=str(data.get("student_id","")).strip()
+    if not sid:
+        return jsonify({"success":False,"message":"No ID provided"}),400
+
+    active=get_active_session(user)
+    if not active:
+        return jsonify({"success":False,"message":"No active scheduled class assigned to this account right now."}),403
+    if not faculty_can_access_session(active,user):
+        return jsonify({"success":False,"message":"Forbidden"}),403
+
     student=Student.query.filter_by(student_id=sid,active=True).first()
-    if not student: return jsonify({"success":False,"message":"Student not found"})
-    roster=class_students(active.course or "",active.year_level or "",active.major or "",active.section or "")
-    if student.id not in {s.id for s in roster}: return jsonify({"success":False,"message":"Student is not enrolled in the currently active class.","student":{"name":student.full_name,"student_id":student.student_id}})
-    existing=Attendance.query.filter_by(student_id=student.id,session_id=active.id).first()
-    if existing: return jsonify({"success":False,"message":"Already scanned","student":{"name":student.full_name,"student_id":student.student_id}})
+    if not student:
+        return jsonify({"success":False,"message":"Student not found"}),404
+
+    roster=class_students(
+        active.course or "",active.year_level or "",
+        active.major or "",active.section or "",user
+    )
+    if student.id not in {s.id for s in roster}:
+        return jsonify({
+            "success":False,
+            "message":"Student is not enrolled in the currently active class.",
+            "student":{"name":student.full_name,"student_id":student.student_id}
+        }),403
+
+    existing=Attendance.query.filter_by(
+        student_id=student.id,session_id=active.id
+    ).first()
+    if existing:
+        return jsonify({
+            "success":False,"message":"Already scanned",
+            "student":{"name":student.full_name,"student_id":student.student_id}
+        })
+
     status=determine_status(active)
-    db.session.add(Attendance(student_id=student.id,session_id=active.id,scan_time=datetime.now(),status=status)); db.session.commit()
+    db.session.add(Attendance(
+        student_id=student.id,session_id=active.id,
+        scan_time=datetime.now(),status=status
+    ))
+    db.session.commit()
     now=datetime.now()
-    return jsonify({"success":True,"status":status,"date":date.today().strftime("%B %d, %Y"),"time":now.strftime("%I:%M:%S %p"),"student":{"name":student.full_name,"student_id":student.student_id,"course":student.course,"year":student.year_level,"major":student.major or "","section":student.section or ""}})
- 
+    return jsonify({
+        "success":True,"status":status,
+        "date":date.today().strftime("%B %d, %Y"),
+        "time":now.strftime("%I:%M:%S %p"),
+        "student":{
+            "name":student.full_name,"student_id":student.student_id,
+            "course":student.course,"year":student.year_level,
+            "major":student.major or "","section":student.section or ""
+        }
+    })
+
+
 @app.route("/scanner")
 @login_required
 def scanner():
-    active=get_active_session()
-    banner=f"<div class='session-banner'><strong>Active Class: {active.name}</strong><span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>{active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>" if active else "<div class='alert warning'>No scheduled class is active right now.</div>"
-    content=f"""<div class="scanner"><div class="page-header"><h1>QR Scanner</h1></div>{banner}<div class="card"><div id="reader"></div><div id="scannerStatus" class="scanner-status">Ready to scan QR Code...</div><div id="result" class="result hidden"><h2 id="resultTitle"></h2><h3 id="studentName"></h3><p id="studentId"></p><p id="studentCourse"></p><p id="studentClass"></p><div id="status" class="big-status"></div><p id="scanDate"></p><p id="scanTime"></p></div></div></div><script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
-let processing=false;
-function statusMsg(m){{document.getElementById('scannerStatus').textContent=m;}}
-async function processScan(sid){{sid=String(sid||'').trim();if(!sid||processing)return;processing=true;statusMsg('Checking...');try{{const res=await fetch('{url_for('scan')}',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{student_id:sid}})}});const d=await res.json();showResult(d);}}catch(e){{statusMsg('Server error.');}}setTimeout(()=>{{processing=false;statusMsg('Ready for next scan.');}},1500);}}
-function showResult(d){{const r=document.getElementById('result');r.classList.remove('hidden');document.getElementById('resultTitle').textContent=d.success?'ATTENDANCE RECORDED':(d.message||'Scan failed');document.getElementById('status').textContent=d.success?d.status:'FAILED';document.getElementById('status').className='big-status '+(d.success?d.status.toLowerCase():'absent');if(d.student){{document.getElementById('studentName').textContent=d.student.name;document.getElementById('studentId').textContent='ID: '+d.student.student_id;document.getElementById('studentCourse').textContent='Course: '+d.student.course;document.getElementById('studentClass').textContent=d.student.year+' • '+(d.student.major||'')+' • '+(d.student.section||'');}}if(d.date)document.getElementById('scanDate').textContent='Date: '+d.date;if(d.time)document.getElementById('scanTime').textContent='Time: '+d.time;}}
-const html5QrCode=new Html5Qrcode('reader');html5QrCode.start({{facingMode:'environment'}},{{fps:10,qrbox:{{width:250,height:250}}}},txt=>{{if(!processing)processScan(txt);}},()=>{{}}).catch(e=>statusMsg('Camera error: '+e.message));
-</script>"""
+    active=get_active_session(current_user())
+    banner=f"""<div class='session-banner'><strong>Active Class: {active.name}</strong>
+    <span>{active.course} • {active.year_level} • {active.major or 'No Major'}<br>
+    {active.start_time.strftime('%I:%M %p')} - {active.end_time.strftime('%I:%M %p')}</span></div>""" if active else """
+    <div class="alert warning">No scheduled class assigned to your account is active right now.</div>"""
+    content=f"""<div class="scanner"><div class="page-header"><h1>QR Scanner</h1></div>{banner}
+    <div class="card"><div id="reader"></div><div id="scannerStatus" class="scanner-status">
+    Ready to scan QR Code...</div><div id="result" class="result hidden"><h2 id="resultTitle"></h2>
+    <h3 id="studentName"></h3><p id="studentId"></p><p id="studentCourse"></p><p id="studentClass"></p>
+    <div id="status" class="big-status"></div><p id="scanDate"></p><p id="scanTime"></p></div></div></div>
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script><script>
+    let processing=false;
+    function statusMsg(m){{document.getElementById('scannerStatus').textContent=m;}}
+    async function processScan(sid){{sid=String(sid||'').trim();if(!sid||processing)return;processing=true;
+    statusMsg('Checking...');try{{const res=await fetch('{url_for('scan')}',{{method:'POST',
+    headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{student_id:sid}})}});const d=await res.json();
+    showResult(d);}}catch(e){{statusMsg('Server error.');}}setTimeout(()=>{{processing=false;
+    statusMsg('Ready for next scan.');}},1500);}}
+    function showResult(d){{const r=document.getElementById('result');r.classList.remove('hidden');
+    document.getElementById('resultTitle').textContent=d.success?'ATTENDANCE RECORDED':(d.message||'Scan failed');
+    document.getElementById('status').textContent=d.success?d.status:'FAILED';
+    document.getElementById('status').className='big-status '+(d.success?d.status.toLowerCase():'absent');
+    if(d.student){{document.getElementById('studentName').textContent=d.student.name;
+    document.getElementById('studentId').textContent='ID: '+d.student.student_id;
+    document.getElementById('studentCourse').textContent='Course: '+d.student.course;
+    document.getElementById('studentClass').textContent=d.student.year+' • '+(d.student.major||'')+' • '+(d.student.section||'');}}
+    if(d.date)document.getElementById('scanDate').textContent='Date: '+d.date;
+    if(d.time)document.getElementById('scanTime').textContent='Time: '+d.time;}}
+    const html5QrCode=new Html5Qrcode('reader');html5QrCode.start(
+    {{facingMode:'environment'}},{{fps:10,qrbox:{{width:250,height:250}}}},
+    txt=>{{if(!processing)processScan(txt);}},()=>{{}}).catch(e=>statusMsg('Camera error: '+e.message));
+    </script>"""
     return render_page(content,"QR Scanner")
- 
+
 @app.route("/attendance")
 @login_required
 def attendance():
-    course = request.args.get("course", "").strip()
-    year_level = request.args.get("year_level", "").strip()
-    attendance_date = request.args.get("date", "").strip()
-    courses = [x[0] for x in db.session.query(Student.course).distinct().order_by(Student.course).all() if x[0]]
-    years = [x[0] for x in db.session.query(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
-    q = Attendance.query.join(Student).join(AttendanceSession)
-    if course: q = q.filter(Student.course == course)
-    if year_level: q = q.filter(Student.year_level == year_level)
-    if attendance_date: q = q.filter(AttendanceSession.session_date == attendance_date)
-    records = q.order_by(Attendance.scan_time.desc()).all()
-    options_course = '<option value="">All Courses</option>' + ''.join(f'<option value="{c}" {"selected" if c == course else ""}>{c}</option>' for c in courses)
-    options_year = '<option value="">All Year Levels</option>' + ''.join(f'<option value="{y}" {"selected" if y == year_level else ""}>{y}</option>' for y in years)
-    rows = "".join(f"<tr><td>{r.student.student_id}</td><td>{r.student.full_name}</td><td>{r.student.course}</td><td>{r.student.major or ''}</td><td>{r.student.year_level}</td><td>{r.attendance_session.session_date}</td><td>{r.scan_time.strftime('%I:%M %p') if r.status != 'ABSENT' else '—'}</td><td><span class='badge {r.status.lower()}'>{r.status}</span></td></tr>" for r in records) or "<tr><td colspan='8' class='empty'>No attendance records.</td></tr>"
-    content = f"""<div class="page-header"><h1>Attendance Records</h1></div><div class="card"><form method="GET"><div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div><div><label>Year Level</label><select name="year_level">{options_year}</select></div><div><label>Date</label><input type="date" name="date" value="{attendance_date}"></div></div><button class="btn primary">Apply Filters</button> <a class="btn secondary" href="{url_for('attendance')}">Reset</a></form></div>
-    <div class="card"><div class="table-container"><table><tr><th>Student ID</th><th>Name</th><th>Course</th><th>Major</th><th>Year Level</th><th>Date</th><th>Time In</th><th>Status</th></tr>{rows}</table></div></div>"""
+    user=current_user()
+    course=request.args.get("course","").strip()
+    year_level=request.args.get("year_level","").strip()
+    attendance_date=request.args.get("date","").strip()
+
+    student_scope=accessible_students_query(user)
+    courses=[x[0] for x in student_scope.with_entities(Student.course).distinct().order_by(Student.course).all() if x[0]]
+    years=[x[0] for x in student_scope.with_entities(Student.year_level).distinct().order_by(Student.year_level).all() if x[0]]
+
+    q=Attendance.query.join(Student).join(AttendanceSession)
+    if user.role != "admin":
+        q=q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == AttendanceSession.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    if course:
+        q=q.filter(Student.course==course)
+    if year_level:
+        q=q.filter(Student.year_level==year_level)
+    if attendance_date:
+        q=q.filter(AttendanceSession.session_date==attendance_date)
+
+    records=q.order_by(Attendance.scan_time.desc()).all()
+    options_course='<option value="">All Courses</option>'+''.join(
+        f'<option value="{c}" {"selected" if c==course else ""}>{c}</option>' for c in courses
+    )
+    options_year='<option value="">All Year Levels</option>'+''.join(
+        f'<option value="{y}" {"selected" if y==year_level else ""}>{y}</option>' for y in years
+    )
+    rows="".join(
+        f"<tr><td>{r.student.student_id}</td><td>{r.student.full_name}</td><td>{r.student.course}</td>"
+        f"<td>{r.student.major or ''}</td><td>{r.student.year_level}</td>"
+        f"<td>{r.attendance_session.session_date}</td>"
+        f"<td>{r.scan_time.strftime('%I:%M %p') if r.status != 'ABSENT' else '—'}</td>"
+        f"<td><span class='badge {r.status.lower()}'>{r.status}</span></td></tr>"
+        for r in records
+    ) or "<tr><td colspan='8' class='empty'>No attendance records.</td></tr>"
+
+    content=f"""<div class="page-header"><h1>Attendance Records</h1></div><div class="card"><form method="GET">
+    <div class="class-filter"><div><label>Course</label><select name="course">{options_course}</select></div>
+    <div><label>Year Level</label><select name="year_level">{options_year}</select></div><div><label>Date</label>
+    <input type="date" name="date" value="{attendance_date}"></div></div><button class="btn primary">
+    Apply Filters</button> <a class="btn secondary" href="{url_for('attendance')}">Reset</a></form></div>
+    <div class="card"><div class="table-container"><table><tr><th>Student ID</th><th>Name</th><th>Course</th>
+    <th>Major</th><th>Year Level</th><th>Date</th><th>Time In</th><th>Status</th></tr>{rows}</table></div></div>"""
     return render_page(content, "Attendance")
- 
- 
-def get_class_options():
-    pairs=db.session.query(Student.course,Student.year_level,Student.major,Student.section).filter(Student.active==True).distinct().order_by(Student.course,Student.year_level,Student.major,Student.section).all()
-    return pairs
- 
+
+
 @app.route("/assessments")
 @login_required
 def assessments():
-    records=Assessment.query.join(Student).order_by(Assessment.assessment_date.desc(),Assessment.id.desc()).all()
-    rows="".join(f"<tr><td>{a.assessment_date}</td><td>{a.student.student_id}</td><td>{a.student.full_name}</td><td>{a.course or a.student.course}</td><td>{a.assessment_name or a.assessment_type}</td><td>{a.score:.1f}/{a.total_score:.1f}</td><td>{a.percentage:.1f}%</td><td>{(a.weight or 0):.1f}%</td></tr>" for a in records) or "<tr><td colspan='8' class='empty'>No assessments yet.</td></tr>"
-    content=f"""<div class="page-header"><div><h1>Assessments / Grades</h1><p class="muted">Select a class and assessment. The student roster comes automatically from the Student database.</p></div><a href="{url_for('add_assessment')}" class="btn primary">+ Class Assessment</a></div><div class="card"><div class="table-container"><table><tr><th>Date</th><th>ID</th><th>Student</th><th>Class</th><th>Assessment</th><th>Score</th><th>Percentage</th><th>Weight</th></tr>{rows}</table></div></div>"""
+    user=current_user()
+    q=Assessment.query.join(Student)
+    if user.role != "admin":
+        q=q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == Assessment.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    records=q.order_by(
+        Assessment.assessment_date.desc(),Assessment.id.desc()
+    ).all()
+    rows="".join(
+        f"<tr><td>{a.assessment_date}</td><td>{a.student.student_id}</td><td>{a.student.full_name}</td>"
+        f"<td>{a.course or a.student.course}</td><td>{a.assessment_name or a.assessment_type}</td>"
+        f"<td>{a.score:.1f}/{a.total_score:.1f}</td><td>{a.percentage:.1f}%</td>"
+        f"<td>{(a.weight or 0):.1f}%</td></tr>"
+        for a in records
+    ) or "<tr><td colspan='8' class='empty'>No assessments yet.</td></tr>"
+    content=f"""<div class="page-header"><div><h1>Assessments / Grades</h1><p class="muted">
+    Select a class and assessment. The student roster comes automatically from the Student database.
+    Only records belonging to your assigned classes are accessible.</p></div><a href="{url_for('add_assessment')}"
+    class="btn primary">+ Class Assessment</a></div><div class="card"><div class="table-container">
+    <table><tr><th>Date</th><th>ID</th><th>Student</th><th>Class</th><th>Assessment</th><th>Score</th>
+    <th>Percentage</th><th>Weight</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Assessments")
- 
+
+
 @app.route("/assessments/configs")
 @login_required
 def assessment_configs():
-    items=AssessmentConfig.query.order_by(AssessmentConfig.course,AssessmentConfig.year_level,AssessmentConfig.assessment_name).all()
-    rows="".join(f"<tr><td>{c.course}</td><td>{c.year_level}</td><td>{c.major or ''}</td><td>{c.section or ''}</td><td>{c.assessment_type}</td><td>{c.assessment_name}</td><td>{c.total_score:g}</td><td>{c.weight:g}%</td></tr>" for c in items) or "<tr><td colspan='8' class='empty'>No saved assessment configurations.</td></tr>"
-    content=f"""<div class="page-header"><h1>Saved Assessment Configurations</h1><a href="{url_for('add_assessment')}" class="btn primary">+ New Assessment</a></div><div class="card"><div class="table-container"><table><tr><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Type</th><th>Name</th><th>Total</th><th>Weight</th></tr>{rows}</table></div></div>"""
+    user=current_user()
+    q=AssessmentConfig.query
+    if user.role != "admin":
+        q=q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == AssessmentConfig.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    items=q.order_by(
+        AssessmentConfig.course,AssessmentConfig.year_level,AssessmentConfig.assessment_name
+    ).all()
+    rows="".join(
+        f"<tr><td>{c.course}</td><td>{c.year_level}</td><td>{c.major or ''}</td>"
+        f"<td>{c.section or ''}</td><td>{c.assessment_type}</td><td>{c.assessment_name}</td>"
+        f"<td>{c.total_score:g}</td><td>{c.weight:g}%</td></tr>"
+        for c in items
+    ) or "<tr><td colspan='8' class='empty'>No saved assessment configurations.</td></tr>"
+    content=f"""<div class="page-header"><h1>Saved Assessment Configurations</h1><a href="{url_for('add_assessment')}"
+    class="btn primary">+ New Assessment</a></div><div class="card"><div class="table-container">
+    <table><tr><th>Course</th><th>Year</th><th>Major</th><th>Section</th><th>Type</th><th>Name</th>
+    <th>Total</th><th>Weight</th></tr>{rows}</table></div></div>"""
     return render_page(content,"Assessment Configurations")
- 
+
+
 @app.route("/assessments/add",methods=["GET","POST"])
 @login_required
 def add_assessment():
+    user=current_user()
     if request.method=="POST":
-        course=request.form.get("course","").strip(); year=request.form.get("year_level","").strip(); major=request.form.get("major","").strip(); section=request.form.get("section","").strip()
-        a_type=request.form.get("assessment_type","").strip(); name=request.form.get("assessment_name","").strip(); total_raw=request.form.get("total_score","").strip(); weight_raw=request.form.get("weight","0").strip(); a_date=request.form.get("assessment_date","").strip()
-        try: total=float(total_raw); weight=float(weight_raw or 0); adate=datetime.strptime(a_date,"%Y-%m-%d").date()
-        except: flash("Enter valid assessment details.","danger"); return redirect(url_for("add_assessment"))
-        if total<=0 or weight<0 or weight>100: flash("Total score must be greater than 0 and weight must be between 0 and 100.","danger"); return redirect(url_for("add_assessment"))
-        roster=class_students(course,year,major,section)
-        if not roster: flash("No active students match that class.","danger"); return redirect(url_for("add_assessment"))
-        config=AssessmentConfig.query.filter_by(course=course,year_level=year,major=major or None,section=section or None,assessment_type=a_type,assessment_name=name).first()
-        if config:
-            config.total_score=total; config.weight=weight; config.active=True
+        course=request.form.get("course","").strip()
+        year=request.form.get("year_level","").strip()
+        major=request.form.get("major","").strip()
+        section=request.form.get("section","").strip()
+        a_type=request.form.get("assessment_type","").strip()
+        name=request.form.get("assessment_name","").strip()
+        total_raw=request.form.get("total_score","").strip()
+        weight_raw=request.form.get("weight","0").strip()
+        a_date=request.form.get("assessment_date","").strip()
+
+        try:
+            total=float(total_raw)
+            weight=float(weight_raw or 0)
+            adate=datetime.strptime(a_date,"%Y-%m-%d").date()
+        except:
+            flash("Enter valid assessment details.","danger")
+            return redirect(url_for("add_assessment"))
+        if total<=0 or weight<0 or weight>100:
+            flash("Total score must be greater than 0 and weight must be between 0 and 100.","danger")
+            return redirect(url_for("add_assessment"))
+
+        # Resolve the exact assigned schedule. The client-supplied course/year
+        # fields are NOT trusted for authorization.
+        schedule_q=AttendanceSchedule.query.filter_by(
+            course=course,year_level=year,major=major or None,section=section or None,
+            active=True
+        )
+        if user.role == "admin":
+            schedule=schedule_q.order_by(AttendanceSchedule.id).first()
         else:
-            config=AssessmentConfig(course=course,year_level=year,major=major or None,section=section or None,assessment_type=a_type,assessment_name=name,total_score=total,weight=weight,active=True); db.session.add(config); db.session.flush()
+            schedule=schedule_q.join(
+                FacultySchedule,
+                FacultySchedule.schedule_id == AttendanceSchedule.id
+            ).filter(FacultySchedule.faculty_id == user.id).first()
+
+        if not schedule:
+            flash("You are not assigned to that class.","danger")
+            return redirect(url_for("add_assessment"))
+
+        roster=class_students(course,year,major,section,user)
+        if not roster:
+            flash("No active students match that assigned class.","danger")
+            return redirect(url_for("add_assessment"))
+
+        config=AssessmentConfig.query.filter_by(
+            course=course,year_level=year,major=major or None,section=section or None,
+            assessment_type=a_type,assessment_name=name,schedule_id=schedule.id
+        ).first()
+        if config:
+            config.total_score=total
+            config.weight=weight
+            config.active=True
+            config.faculty_id=user.id if user.role != "admin" else config.faculty_id
+        else:
+            config=AssessmentConfig(
+                faculty_id=user.id if user.role != "admin" else None,
+                schedule_id=schedule.id,course=course,year_level=year,
+                major=major or None,section=section or None,
+                assessment_type=a_type,assessment_name=name,
+                total_score=total,weight=weight,active=True
+            )
+            db.session.add(config)
+            db.session.flush()
+
         saved=0
         for st in roster:
             raw=request.form.get(f"score_{st.id}","").strip()
             if raw=="":
                 continue
-            try: score=float(raw)
-            except: continue
+            try:
+                score=float(raw)
+            except:
+                continue
             if score<0 or score>total:
-                flash(f"Invalid score for {st.full_name}. Score must be between 0 and {total:g}.","danger"); db.session.rollback(); return redirect(url_for("add_assessment"))
-            existing=Assessment.query.filter_by(student_id=st.id,assessment_date=adate,assessment_type=a_type,assessment_name=name).first()
+                flash(f"Invalid score for {st.full_name}. Score must be between 0 and {total:g}.","danger")
+                db.session.rollback()
+                return redirect(url_for("add_assessment"))
+
+            existing=Assessment.query.filter_by(
+                student_id=st.id,assessment_date=adate,
+                assessment_type=a_type,assessment_name=name,
+                schedule_id=schedule.id
+            ).first()
             if existing:
-                existing.score=score; existing.total_score=total; existing.percentage=round((score/total)*100,2); existing.weight=weight; existing.config_id=config.id; existing.course=course; existing.year_level=year; existing.major=major or None; existing.section=section or None
+                if not faculty_can_access_assessment(existing,user):
+                    db.session.rollback()
+                    return "Forbidden",403
+                existing.score=score
+                existing.total_score=total
+                existing.percentage=round((score/total)*100,2)
+                existing.weight=weight
+                existing.config_id=config.id
+                existing.faculty_id=user.id if user.role != "admin" else existing.faculty_id
+                existing.course=course
+                existing.year_level=year
+                existing.major=major or None
+                existing.section=section or None
             else:
-                db.session.add(Assessment(student_id=st.id,assessment_type=a_type,assessment_name=name,score=score,total_score=total,percentage=round((score/total)*100,2),assessment_date=adate,weight=weight,config_id=config.id,course=course,year_level=year,major=major or None,section=section or None))
+                db.session.add(Assessment(
+                    student_id=st.id,
+                    faculty_id=user.id if user.role != "admin" else None,
+                    schedule_id=schedule.id,
+                    assessment_type=a_type,assessment_name=name,
+                    score=score,total_score=total,
+                    percentage=round((score/total)*100,2),
+                    assessment_date=adate,weight=weight,
+                    config_id=config.id,course=course,year_level=year,
+                    major=major or None,section=section or None
+                ))
             saved+=1
-        db.session.commit(); flash(f"Assessment saved for {saved} student(s). Configuration saved for reuse.","success"); return redirect(url_for("assessments"))
-    classes=get_class_options()
-    class_opts="<option value=''>Select class</option>"+"".join(f"<option data-course='{c}' data-year='{y}' data-major='{m or ''}' data-section='{s or ''}' value='{c}|{y}|{m or ''}|{s or ''}'>{c} • {y} • {m or 'No Major'} • {s or 'No Section'}</option>" for c,y,m,s in classes)
+        db.session.commit()
+        flash(f"Assessment saved for {saved} student(s). Configuration saved for reuse.","success")
+        return redirect(url_for("assessments"))
+
+    classes=get_class_options(user)
+    class_opts="<option value=''>Select class</option>"+"".join(
+        f"<option data-course='{c}' data-year='{y}' data-major='{m or ''}' data-section='{s or ''}' "
+        f"value='{c}|{y}|{m or ''}|{s or ''}'>{c} • {y} • {m or 'No Major'} • {s or 'No Section'}</option>"
+        for c,y,m,s in classes
+    )
     types="".join(f"<option>{x}</option>" for x in ASSESSMENT_TYPES)
-    content=f"""<div class="page-header"><h1>Class-Based Assessment</h1><a href="{url_for('assessment_configs')}" class="btn secondary">Saved Configurations</a></div><div class="card"><div class="help">Choose the class. Active students are loaded automatically. When an assessment with the same class, type, and name already exists, its saved total score and weight are reused.</div><label>Class / Cohort</label><select id="classSelect" onchange="loadClass()" required>{class_opts}</select><form method="POST" id="gradeForm"><input type="hidden" name="course" id="course"><input type="hidden" name="year_level" id="year_level"><input type="hidden" name="major" id="major"><input type="hidden" name="section" id="section"><div class="grid2"><div><label>Assessment Type</label><select name="assessment_type" id="assessmentType" onchange="loadConfig()" required>{types}</select></div><div><label>Assessment Name</label><input name="assessment_name" id="assessmentName" placeholder="Quiz 1" onblur="loadConfig()" required></div><div><label>Total Score</label><input type="number" step="0.01" name="total_score" id="totalScore" required></div><div><label>Percentage / Weight</label><input type="number" step="0.01" min="0" max="100" name="weight" id="weight" value="0" required></div><div><label>Assessment Date</label><input type="date" name="assessment_date" value="{date.today()}" required></div></div><div id="roster" class="card"><p class="muted">Select a class to load students.</p></div><div class="form-actions"><a href="{url_for('assessments')}" class="btn secondary">Cancel</a><button class="btn primary">Save All Scores</button></div></form></div>
-<script>
-function loadClass(){{
- const o=document.getElementById('classSelect').selectedOptions[0]; if(!o||!o.value)return;
- const p=o.value.split('|'); document.getElementById('course').value=p[0];document.getElementById('year_level').value=p[1];document.getElementById('major').value=p[2];document.getElementById('section').value=p[3];
- loadRoster(); loadConfig();
-}}
-async function loadRoster(){{
- const q=new URLSearchParams({{course:document.getElementById('course').value,year_level:document.getElementById('year_level').value,major:document.getElementById('major').value,section:document.getElementById('section').value}});
- const r=await fetch('{url_for('api_class_students')}?'+q.toString()); const d=await r.json();
- let h='<div class="table-container"><table><tr><th>Student ID</th><th>Student Name</th><th>Score</th><th>Total Score</th><th>Percentage</th></tr>';
- if(!d.students.length)h+='<tr><td colspan="5" class="empty">No active students found for this class.</td></tr>';
- d.students.forEach(s=>h+=`<tr><td>${{s.student_id}}</td><td>${{s.full_name}}</td><td><input class="score-input" type="number" min="0" step="0.01" max="${{document.getElementById('totalScore').value||0}}" name="score_${{s.id}}" oninput="calc(this)"></td><td class="total-cell">${{document.getElementById('totalScore').value||'0'}}</td><td class="pct-cell">0.00%</td></tr>`);
- h+='</table></div>';document.getElementById('roster').innerHTML=h;
-}}
-function calc(el){{const row=el.closest('tr');const total=parseFloat(document.getElementById('totalScore').value)||0;row.querySelector('.total-cell').textContent=total;row.querySelector('.pct-cell').textContent=total?((parseFloat(el.value)||0)/total*100).toFixed(2)+'%':'0.00%';}}
-async function loadConfig(){{
- const c=document.getElementById('course').value,y=document.getElementById('year_level').value,m=document.getElementById('major').value,s=document.getElementById('section').value,t=document.getElementById('assessmentType').value,n=document.getElementById('assessmentName').value;
- if(!c||!y||!n)return; const q=new URLSearchParams({{course:c,year_level:y,major:m,section:s,assessment_type:t,assessment_name:n}});
- const r=await fetch('{url_for('api_assessment_config')}?'+q.toString());const d=await r.json();
- if(d.found){{document.getElementById('totalScore').value=d.total_score;document.getElementById('weight').value=d.weight;loadRoster();}}
-}}
-document.getElementById('totalScore').addEventListener('input',()=>{{document.querySelectorAll('.score-input').forEach(calc);}});
-</script>"""
+    content=f"""<div class="page-header"><h1>Class-Based Assessment</h1><a href="{url_for('assessment_configs')}"
+    class="btn secondary">Saved Configurations</a></div><div class="card"><div class="help">Choose an assigned
+    class. Active students are loaded automatically. Authorization is checked again when scores are saved.</div>
+    <label>Class / Cohort</label><select id="classSelect" onchange="loadClass()" required>{class_opts}</select>
+    <form method="POST" id="gradeForm"><input type="hidden" name="course" id="course"><input type="hidden"
+    name="year_level" id="year_level"><input type="hidden" name="major" id="major"><input type="hidden"
+    name="section" id="section"><div class="grid2"><div><label>Assessment Type</label><select
+    name="assessment_type" id="assessmentType" onchange="loadConfig()" required>{types}</select></div>
+    <div><label>Assessment Name</label><input name="assessment_name" id="assessmentName" placeholder="Quiz 1"
+    onblur="loadConfig()" required></div><div><label>Total Score</label><input type="number" step="0.01"
+    name="total_score" id="totalScore" required></div><div><label>Percentage / Weight</label><input type="number"
+    step="0.01" min="0" max="100" name="weight" id="weight" value="0" required></div><div><label>Assessment Date</label>
+    <input type="date" name="assessment_date" value="{date.today()}" required></div></div><div id="roster"
+    class="card"><p class="muted">Select a class to load students.</p></div><div class="form-actions">
+    <a href="{url_for('assessments')}" class="btn secondary">Cancel</a><button class="btn primary">Save All Scores</button>
+    </div></form></div>
+    <script>
+    function loadClass(){{
+      const o=document.getElementById('classSelect').selectedOptions[0]; if(!o||!o.value)return;
+      const p=o.value.split('|');document.getElementById('course').value=p[0];
+      document.getElementById('year_level').value=p[1];document.getElementById('major').value=p[2];
+      document.getElementById('section').value=p[3];loadRoster();loadConfig();
+    }}
+    async function loadRoster(){{
+      const q=new URLSearchParams({{course:document.getElementById('course').value,
+      year_level:document.getElementById('year_level').value,major:document.getElementById('major').value,
+      section:document.getElementById('section').value}});
+      const r=await fetch('{url_for('api_class_students')}?'+q.toString());
+      if(!r.ok)return;const d=await r.json();
+      let h='<div class="table-container"><table><tr><th>Student ID</th><th>Student Name</th><th>Score</th><th>Total Score</th><th>Percentage</th></tr>';
+      if(!d.students.length)h+='<tr><td colspan="5" class="empty">No active students found for this class.</td></tr>';
+      d.students.forEach(s=>h+=`<tr><td>${{s.student_id}}</td><td>${{s.full_name}}</td><td><input
+      class="score-input" type="number" min="0" step="0.01" max="${{document.getElementById('totalScore').value||0}}"
+      name="score_${{s.id}}" oninput="calc(this)"></td><td class="total-cell">${{document.getElementById('totalScore').value||'0'}}</td>
+      <td class="pct-cell">0.00%</td></tr>`);
+      h+='</table></div>';document.getElementById('roster').innerHTML=h;
+    }}
+    function calc(el){{const row=el.closest('tr');const total=parseFloat(document.getElementById('totalScore').value)||0;
+      row.querySelector('.total-cell').textContent=total;row.querySelector('.pct-cell').textContent=total?
+      ((parseFloat(el.value)||0)/total*100).toFixed(2)+'%':'0.00%';}}
+    async function loadConfig(){{
+      const c=document.getElementById('course').value,y=document.getElementById('year_level').value,
+      m=document.getElementById('major').value,s=document.getElementById('section').value,
+      t=document.getElementById('assessmentType').value,n=document.getElementById('assessmentName').value;
+      if(!c||!y||!n)return;const q=new URLSearchParams({{course:c,year_level:y,major:m,section:s,
+      assessment_type:t,assessment_name:n}});const r=await fetch('{url_for('api_assessment_config')}?'+q.toString());
+      if(!r.ok)return;const d=await r.json();if(d.found){{document.getElementById('totalScore').value=d.total_score;
+      document.getElementById('weight').value=d.weight;loadRoster();}}
+    }}
+    document.getElementById('totalScore').addEventListener('input',()=>{{
+      document.querySelectorAll('.score-input').forEach(calc);
+    }});
+    </script>"""
     return render_page(content,"Class-Based Assessment")
- 
+
+
 @app.route("/api/class-students")
 @login_required
 def api_class_students():
-    course=request.args.get("course","").strip(); year=request.args.get("year_level","").strip(); major=request.args.get("major","").strip(); section=request.args.get("section","").strip()
-    items=class_students(course,year,major,section)
-    return jsonify({"students":[{"id":s.id,"student_id":s.student_id,"full_name":s.full_name} for s in items]})
- 
+    user=current_user()
+    course=request.args.get("course","").strip()
+    year=request.args.get("year_level","").strip()
+    major=request.args.get("major","").strip()
+    section=request.args.get("section","").strip()
+
+    if user.role != "admin" and not faculty_can_access_class(course,year,major,section,user):
+        return jsonify({"success":False,"message":"Forbidden"}),403
+
+    items=class_students(course,year,major,section,user)
+    return jsonify({
+        "students":[{"id":s.id,"student_id":s.student_id,"full_name":s.full_name} for s in items]
+    })
+
+
 @app.route("/api/assessment-config")
 @login_required
 def api_assessment_config():
-    c=request.args.get("course","").strip(); y=request.args.get("year_level","").strip(); m=request.args.get("major","").strip(); s=request.args.get("section","").strip(); t=request.args.get("assessment_type","").strip(); n=request.args.get("assessment_name","").strip()
-    cfg=AssessmentConfig.query.filter_by(course=c,year_level=y,major=m or None,section=s or None,assessment_type=t,assessment_name=n,active=True).first()
-    if not cfg:return jsonify({"found":False})
+    user=current_user()
+    c=request.args.get("course","").strip()
+    y=request.args.get("year_level","").strip()
+    m=request.args.get("major","").strip()
+    s=request.args.get("section","").strip()
+    t=request.args.get("assessment_type","").strip()
+    n=request.args.get("assessment_name","").strip()
+
+    if user.role != "admin" and not faculty_can_access_class(c,y,m,s,user):
+        return jsonify({"success":False,"message":"Forbidden"}),403
+
+    q=AssessmentConfig.query.filter_by(
+        course=c,year_level=y,major=m or None,section=s or None,
+        assessment_type=t,assessment_name=n,active=True
+    )
+    if user.role != "admin":
+        q=q.join(
+            FacultySchedule,
+            FacultySchedule.schedule_id == AssessmentConfig.schedule_id
+        ).filter(FacultySchedule.faculty_id == user.id)
+    cfg=q.order_by(AssessmentConfig.id.desc()).first()
+    if not cfg:
+        return jsonify({"found":False})
     return jsonify({"found":True,"total_score":cfg.total_score,"weight":cfg.weight})
- 
+
 with app.app_context():
     migrate_existing_database()
  
